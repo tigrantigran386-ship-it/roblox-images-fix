@@ -89,6 +89,10 @@ public class MainActivity extends Activity {
             FixVpnService.userWantsOff = true;   // флаг переживает любое воскрешение сервиса
             toggleBtn.setEnabled(false);
             statusView.setText(R.string.status_stopping);
+            // Явная STOP-команда: сервис получит её даже после воскрешения системой
+            Intent stop = new Intent(this, FixVpnService.class);
+            stop.setAction(FixVpnService.ACTION_STOP);
+            startService(stop);
             stopService(new Intent(this, FixVpnService.class));
             // сервис гаснет асинхронно — обновляем статус с задержками
             statusView.postDelayed(this::refreshStatus, 400);

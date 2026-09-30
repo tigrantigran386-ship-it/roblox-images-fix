@@ -18,12 +18,21 @@ public final class MirrorConfig {
     /** Заблокированный хост → CloudFront-зеркало (тот же контент, те же пути). */
     public static final Map<String, String> HOST_TO_MIRROR = new ConcurrentHashMap<>();
 
-    /** Хосты, которые переписываем (актуально на 30.09.2026; проверялось реальными запросами). */
+    /**
+     * Хосты, которые переписываем (актуально на 30.09.2026; проверялось реальными запросами).
+     * tr — иконки/обложки/аватарки; t0-t7 — ассеты и текстуры, которые грузит ИГРА в плейсе.
+     * Полное покрытие = быстрее грузится мир.
+     */
     static {
         HOST_TO_MIRROR.put("tr.rbxcdn.com", "d77muyc5iodv8.cloudfront.net");
         HOST_TO_MIRROR.put("t0.rbxcdn.com", "djm1c8bbf58td.cloudfront.net");
         HOST_TO_MIRROR.put("t1.rbxcdn.com", "dy9nmzn7lz0hh.cloudfront.net");
+        HOST_TO_MIRROR.put("t2.rbxcdn.com", "dfhkkpbuskwyw.cloudfront.net");
+        HOST_TO_MIRROR.put("t3.rbxcdn.com", "d2jc9kq4sg41pr.cloudfront.net");
+        HOST_TO_MIRROR.put("t4.rbxcdn.com", "dm7zr5njezali.cloudfront.net");
         HOST_TO_MIRROR.put("t5.rbxcdn.com", "d1cn2tk5nesoa7.cloudfront.net");
+        HOST_TO_MIRROR.put("t6.rbxcdn.com", "d175vdehdjtrx5.cloudfront.net");
+        HOST_TO_MIRROR.put("t7.rbxcdn.com", "d1w9tx3idyd562.cloudfront.net");
     }
 
     /** Страховочные IP зеркал (если DoH-обновление не удалось). */
@@ -41,6 +50,21 @@ public final class MirrorConfig {
         FALLBACK_IPS.put("t5.rbxcdn.com", new String[][]{
                 {"18", "238", "238", "32"}, {"18", "238", "238", "71"},
                 {"18", "238", "238", "129"}});
+        FALLBACK_IPS.put("t2.rbxcdn.com", new String[][]{
+                {"99", "86", "101", "97"}, {"99", "86", "101", "66"},
+                {"99", "86", "101", "88"}, {"99", "86", "101", "83"}});
+        FALLBACK_IPS.put("t3.rbxcdn.com", new String[][]{
+                {"143", "204", "160", "15"}, {"143", "204", "160", "12"},
+                {"143", "204", "160", "4"}, {"143", "204", "160", "93"}});
+        FALLBACK_IPS.put("t4.rbxcdn.com", new String[][]{
+                {"52", "85", "129", "112"}, {"52", "85", "129", "125"},
+                {"52", "85", "129", "115"}, {"52", "85", "129", "90"}});
+        FALLBACK_IPS.put("t6.rbxcdn.com", new String[][]{
+                {"52", "85", "129", "5"}, {"52", "85", "129", "15"},
+                {"52", "85", "129", "10"}, {"52", "85", "129", "108"}});
+        FALLBACK_IPS.put("t7.rbxcdn.com", new String[][]{
+                {"99", "86", "101", "128"}, {"99", "86", "101", "21"},
+                {"99", "86", "101", "112"}, {"99", "86", "101", "20"}});
     }
 
     /** Живые IP зеркал: rbxcdn-хост → список IPv4 (байты). */
@@ -76,10 +100,7 @@ public final class MirrorConfig {
             for (Map.Entry<String, String> e : HOST_TO_MIRROR.entrySet()) {
                 List<byte[]> ips = DnsKit.resolveA4(e.getValue());
                 if (ips != null && !ips.isEmpty()) {
-                    // главный хост (картинки) — сортируем по живой задержке
-                    if ("tr.rbxcdn.com".equals(e.getKey())) {
-                        ips = sortByRtt(ips);
-                    }
+                    ips = sortByRtt(ips);   // сортируем КАЖДЫЙ хост по живой задержке
                     MIRROR_IPS.put(e.getKey(), ips);
                 }
             }

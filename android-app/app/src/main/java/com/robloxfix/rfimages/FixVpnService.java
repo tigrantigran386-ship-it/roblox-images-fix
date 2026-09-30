@@ -73,6 +73,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     public static final class Stats {
         public volatile long startedAt;
         public volatile int packets, dnsQueries, rewritten, forwarded, upstreamFail, servfail, sent, errors;
+        public volatile String lastError = "-";
         public volatile String perApp = "?";
         public String report() {
             long up = startedAt == 0 ? 0 : (System.currentTimeMillis() - startedAt) / 1000;
@@ -86,7 +87,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                     + "переслано апстриму: " + forwarded + "\n"
                     + "ошибок апстрима: " + upstreamFail + " (SERVFAIL: " + servfail + ")\n"
                     + "ответов отправлено: " + sent + "\n"
-                    + "внутренних ошибок: " + errors + "\n";
+                    + "внутренних ошибок: " + errors + (errors > 0 ? " (последняя: " + lastError + ")" : "") + "\n";
         }
     }
 
@@ -102,6 +103,9 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     public static volatile boolean running = false;
     /** Флаг «пользователь хочет выключить»: переживает воскрешение сервиса системой. */
     public static volatile boolean userWantsOff = false;
+
+    /** Команда явной остановки (переживает любые воскрешения). */
+    public static final String ACTION_STOP = "com.robloxfix.rfimages.STOP";
 
     private ParcelFileDescriptor tun;
     private FileOutputStream tunOut;
@@ -154,14 +158,19 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (userWantsOff) {
-            // система может воскресить START_STICKY-сервис — немедленно гасимся
+        boolean stopRequested = userWantsOff
+                || (intent != null && ACTION_STOP.equals(intent.getAction()));
+        if (stopRequested) {
+            // система может воскресить сервис — но команда остановки непобедима
+            userWantsOff = true;
+            stopFix();
             try {
                 stopForeground(STOP_FOREGROUND_REMOVE);
             } catch (Exception ignored) { }
             stopSelf();
             return START_NOT_STICKY;
         }
+        userWantsOff = false;
         startAsForeground();
         if (!establishTunnel()) {
             Log.e(TAG, "Не удалось поднять туннель");
@@ -263,6 +272,8 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                     if (n >= 28) handlePacket(buf, n);
                 } catch (Throwable t) {           // НИКАКОЕ исключение не убивает цикл
                     STATS.errors++;
+                    String m = String.valueOf(t);
+                    STATS.lastError = m.length() > 60 ? m.substring(0, 60) : m;
                     if (running) Log.w(TAG, "packet err: " + t);
                     try { Thread.sleep(20); } catch (InterruptedException ie) { break; }
                 }
@@ -319,6 +330,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                 cache.put(cacheKey, new CacheEntry(resp, now + 30_000));
             } else {
                 STATS.upstreamFail++; STATS.servfail++;
+                STATS.lastError = "апстрим DNS не ответил";
                 resp = DnsKit.buildServFail(q);   // мгновенный отказ вместо зависания
             }
             sendDns(q, resp);

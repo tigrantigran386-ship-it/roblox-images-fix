@@ -47,6 +47,15 @@ public final class MirrorConfig {
         HOST_TO_MIRROR.put("c7.rbxcdn.com", "d1aly16ju3lgz1.cloudfront.net");
         HOST_TO_MIRROR.put("clientsettings.rbxcdn.com", "d2v57ias1m20gl.cloudfront.net");
         HOST_TO_MIRROR.put("static.rbxcdn.com", "d143j4fdqe1jki.cloudfront.net");
+        // v1.8.0: sc0-sc7 (по отчёту пользователя — картинки/контент главной)
+        HOST_TO_MIRROR.put("sc0.rbxcdn.com", "d2yzw3aiudktwi.cloudfront.net");
+        HOST_TO_MIRROR.put("sc1.rbxcdn.com", "d19km468h1klz6.cloudfront.net");
+        HOST_TO_MIRROR.put("sc2.rbxcdn.com", "d36u75xya9beit.cloudfront.net");
+        HOST_TO_MIRROR.put("sc3.rbxcdn.com", "d1rs2ilrpmqh8j.cloudfront.net");
+        HOST_TO_MIRROR.put("sc4.rbxcdn.com", "d1smospaako47m.cloudfront.net");
+        HOST_TO_MIRROR.put("sc5.rbxcdn.com", "d1xetq74z9v97x.cloudfront.net");
+        HOST_TO_MIRROR.put("sc6.rbxcdn.com", "d1dm3zyxk2nwhm.cloudfront.net");
+        HOST_TO_MIRROR.put("sc7.rbxcdn.com", "d3ckmkdqmberzi.cloudfront.net");
     }
 
     /** Страховочные IP зеркал (если DoH-обновление не удалось). */
@@ -103,10 +112,31 @@ public final class MirrorConfig {
                 {"143", "204", "160", "74"}, {"143", "204", "160", "39"}});
         FALLBACK_IPS.put("static.rbxcdn.com", new String[][]{
                 {"99", "86", "101", "7"}, {"99", "86", "101", "89"}});
+        FALLBACK_IPS.put("sc0.rbxcdn.com", new String[][]{
+                {"18", "65", "238", "95"}, {"18", "65", "238", "19"}});
+        FALLBACK_IPS.put("sc1.rbxcdn.com", new String[][]{
+                {"3", "165", "160", "54"}, {"3", "165", "160", "126"}});
+        FALLBACK_IPS.put("sc2.rbxcdn.com", new String[][]{
+                {"3", "165", "160", "82"}, {"3", "165", "160", "42"}});
+        FALLBACK_IPS.put("sc3.rbxcdn.com", new String[][]{
+                {"18", "65", "238", "16"}, {"18", "65", "238", "103"}});
+        FALLBACK_IPS.put("sc4.rbxcdn.com", new String[][]{
+                {"52", "85", "129", "18"}, {"52", "85", "129", "84"}});
+        FALLBACK_IPS.put("sc5.rbxcdn.com", new String[][]{
+                {"18", "172", "170", "88"}, {"18", "172", "170", "110"}});
+        FALLBACK_IPS.put("sc6.rbxcdn.com", new String[][]{
+                {"52", "85", "129", "46"}, {"52", "85", "129", "88"}});
+        FALLBACK_IPS.put("sc7.rbxcdn.com", new String[][]{
+                {"52", "85", "129", "103"}, {"52", "85", "129", "59"}});
     }
 
     /** Живые IP зеркал: rbxcdn-хост → список IPv4 (байты). */
     private static final Map<String, List<byte[]>> MIRROR_IPS = new ConcurrentHashMap<>();
+
+    /** Динамически найденные (автопоиском) зеркала: хост → cloudfront-имя. */
+    private static final Map<String, String> DYNAMIC = new ConcurrentHashMap<>();
+    private static final java.util.Set<String> DISCOVERY_TRIED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private static final AtomicLong LAST_REFRESH = new AtomicLong(0);
     private static final long REFRESH_INTERVAL_MS = 10 * 60 * 1000; // 10 минут
@@ -201,8 +231,39 @@ public final class MirrorConfig {
 
     /** Переписывать ли этот запрос (только A/AAAA по известным хостам). */
     public static boolean shouldRewrite(String qname, int qtype) {
-        if (!HOST_TO_MIRROR.containsKey(qname)) return false;
-        return qtype == DnsKit.TYPE_A || qtype == DnsKit.TYPE_AAAA;
+        if (qtype != DnsKit.TYPE_A && qtype != DnsKit.TYPE_AAAA) return false;
+        return HOST_TO_MIRROR.containsKey(qname) || DYNAMIC.containsKey(qname);
+    }
+
+    /**
+     * Автопоиск зеркала для незнакомого rbxcdn-хоста (один раз на хост).
+     * Если найдено — хост начинает переписываться без перезапуска.
+     */
+    public static void discoverAsync(final String host) {
+        if (HOST_TO_MIRROR.containsKey(host) || DYNAMIC.containsKey(host)) return;
+        if (!DISCOVERY_TRIED.add(host)) return;
+        Thread t = new Thread(() -> {
+            String cf = DnsKit.discoverCloudfrontViaAws(host);
+            if (cf != null) {
+                List<byte[]> ips = DnsKit.resolveA4(cf);
+                if (ips != null && !ips.isEmpty()) {
+                    DYNAMIC.put(host, cf);
+                    MIRROR_IPS.put(host, sortByRtt(ips));
+                }
+            }
+        }, "rbxfix-discover-" + host);
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** Строка для отчёта: найденные автопоиском зеркала. */
+    public static String dynamicInfo() {
+        if (DYNAMIC.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder("автопоиск: ");
+        for (Map.Entry<String, String> e : DYNAMIC.entrySet()) {
+            sb.append(e.getKey().split("\\.")[0]).append(" ").append(" ");
+        }
+        return sb.toString().trim() + "\n";
     }
 
     /** Готовый DNS-ответ для переписываемого запроса. */

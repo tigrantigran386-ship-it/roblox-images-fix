@@ -91,7 +91,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             for (Map.Entry<String, Integer> e : passthroughByHost.entrySet()) {
                 byPass.append(e.getKey().split("\\.")[0]).append("=").append(e.getValue()).append(" ");
             }
-            return "Roblox Images Fix v1.7.0\n"
+            return "Roblox Images Fix v1.8.0\n"
                     + "работает: " + (running ? "да (" + up + " c)" : "нет") + "\n"
                     + "per-app: " + perApp + "\n"
                     + "зеркало картинок: " + com.robloxfix.rfimages.MirrorConfig.bestMirrorInfo() + "\n"
@@ -101,6 +101,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                     + (byHost.length() > 0 ? " [" + byHost.toString().trim() + "]" : "") + "\n"
                     + (byPass.length() > 0
                         ? "мимо карты (апстрим): [" + byPass.toString().trim() + "]\n" : "")
+                    + com.robloxfix.rfimages.MirrorConfig.dynamicInfo()
                     + "переслано апстриму: " + forwarded + "\n"
                     + "ошибок апстрима: " + upstreamFail + " (SERVFAIL: " + servfail + ")\n"
                     + "ответов отправлено: " + sent + "\n"
@@ -338,6 +339,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             STATS.passthrough++;
             Integer pc = STATS.passthroughByHost.get(q.qname);
             STATS.passthroughByHost.put(q.qname, pc == null ? 1 : pc + 1);
+            MirrorConfig.discoverAsync(q.qname);   // вдруг у него есть зеркало — найдём
         }
 
         // Остальное — на обычный DNS оператора (быстро), DoH в запасе

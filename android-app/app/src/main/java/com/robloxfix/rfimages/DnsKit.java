@@ -105,14 +105,27 @@ public final class DnsKit {
         return ((b[off] & 0xFF) << 8) | (b[off + 1] & 0xFF);
     }
 
-    /** Читает QNAME. end[0] = смещение после имени (учитывая возможный compression pointer). */
+    /**
+     * Читает QNAME с ПОЛНЫМ следованием compression-указателям (RFC 1035).
+     * end[0] = смещение сразу за именем в исходном потоке.
+     */
     private static String readName(byte[] p, int off, int[] end) {
         StringBuilder sb = new StringBuilder();
         int i = off;
+        int next = -1;
+        int jumps = 0;
         while (i < p.length) {
             int b = p[i] & 0xFF;
-            if (b == 0) { end[0] = i + 1; return sb.toString(); }
-            if ((b & 0xC0) == 0xC0) { end[0] = i + 2; return sb.toString(); } // указатель — выходим
+            if (b == 0) {
+                end[0] = (next >= 0) ? next : i + 1;
+                return sb.toString();
+            }
+            if ((b & 0xC0) == 0xC0) {
+                if (next < 0) next = i + 2;
+                if (++jumps > 8) return null;
+                i = ((b & 0x3F) << 8) | (p[i + 1] & 0xFF);
+                continue;
+            }
             if (b > 63 || i + 1 + b > p.length) return null;
             if (sb.length() > 0) sb.append('.');
             for (int k = 1; k <= b; k++) {
@@ -121,6 +134,59 @@ public final class DnsKit {
                 sb.append(c);
             }
             i += 1 + b;
+        }
+        return null;
+    }
+
+    /** Первая CNAME-запись из DNS-ответа (для раскрутки цепочек). */
+    public static String parseFirstCname(byte[] resp) {
+        try {
+            int qd = u16(resp, 4);
+            int an = u16(resp, 6);
+            int[] end = new int[1];
+            int off = 12;
+            for (int i = 0; i < qd; i++) {
+                readName(resp, off, end);
+                off = end[0] + 4;
+            }
+            for (int i = 0; i < an && off + 12 <= resp.length; i++) {
+                readName(resp, off, end);
+                off = end[0];
+                int type = u16(resp, off);
+                int rdlen = u16(resp, off + 8);
+                off += 10;
+                if (type == 5 && rdlen > 0) {          // CNAME
+                    int[] dend = new int[1];
+                    return readName(resp, off, dend);
+                }
+                off += rdlen;
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+
+    /**
+     * Автопоиск CloudFront-зеркала для произвольного хоста rbxcdn.com:
+     * спрашивает DoH про "&lt;метка&gt;aws.rbxcdn.com" и раскручивает CNAME-цепочку.
+     * Возвращает имя вида dXXXX.cloudfront.net или null.
+     */
+    public static String discoverCloudfrontViaAws(String host) {
+        int dot = host.indexOf('.');
+        if (dot <= 0) return null;
+        String label = host.substring(0, dot);
+        String zone = host.substring(dot + 1);
+        String cur = label + "aws." + zone;
+        for (int i = 0; i < 6; i++) {
+            try {
+                byte[] resp = upstreamQuery(buildQuery(cur, TYPE_A));
+                if (resp == null) return null;
+                String cn = parseFirstCname(resp);
+                if (cn == null) return null;
+                if (cn.endsWith(".cloudfront.net")) return cn;
+                cur = cn;
+            } catch (Exception e) {
+                return null;
+            }
         }
         return null;
     }

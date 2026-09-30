@@ -64,6 +64,16 @@ public class MainActivity extends Activity {
         if (on && isStrictPrivateDnsOn()) checkView.setText(R.string.pdns_warning);
     }
 
+    /** true, если в системе включён «Всегда включён VPN» для нашего приложения. */
+    private boolean isAlwaysOnVpnForUs() {
+        try {
+            String pkg = Settings.Secure.getString(getContentResolver(), "always_on_vpn_app");
+            return pkg != null && pkg.equals(getPackageName());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /** true, если включён строгий «Приватный DNS» (DoT к конкретному хосту). */
     private boolean isStrictPrivateDnsOn() {
         try {
@@ -76,15 +86,21 @@ public class MainActivity extends Activity {
 
     private void toggle() {
         if (FixVpnService.running) {
+            FixVpnService.userWantsOff = true;   // флаг переживает любое воскрешение сервиса
             toggleBtn.setEnabled(false);
             statusView.setText(R.string.status_stopping);
             stopService(new Intent(this, FixVpnService.class));
             // сервис гаснет асинхронно — обновляем статус с задержками
             statusView.postDelayed(this::refreshStatus, 400);
             statusView.postDelayed(this::refreshStatus, 1500);
-            checkView.setText(R.string.check_hint);
+            if (isAlwaysOnVpnForUs()) {
+                checkView.setText(R.string.alwayson_warning);
+            } else {
+                checkView.setText(R.string.check_hint);
+            }
             return;
         }
+        FixVpnService.userWantsOff = false;
 
         // Разрешение на уведомления (Android 13+) — не блокирует запуск
         if (Build.VERSION.SDK_INT >= 33 &&

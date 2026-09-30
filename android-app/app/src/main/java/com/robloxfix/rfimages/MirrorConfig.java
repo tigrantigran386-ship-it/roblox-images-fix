@@ -76,12 +76,58 @@ public final class MirrorConfig {
             for (Map.Entry<String, String> e : HOST_TO_MIRROR.entrySet()) {
                 List<byte[]> ips = DnsKit.resolveA4(e.getValue());
                 if (ips != null && !ips.isEmpty()) {
+                    // главный хост (картинки) — сортируем по живой задержке
+                    if ("tr.rbxcdn.com".equals(e.getKey())) {
+                        ips = sortByRtt(ips);
+                    }
                     MIRROR_IPS.put(e.getKey(), ips);
                 }
             }
         }, "rbxfix-mirror-refresh");
         t.setDaemon(true);
         t.start();
+    }
+
+    /** Последняя измеренная задержка до лучшего IP зеркала (мс). */
+    private static volatile int LAST_RTT_MS = Integer.MAX_VALUE;
+
+    /** TCP-подключение на 443 — меряем реальную задержку до эджа. */
+    private static int rttMs(byte[] ip) {
+        java.net.Socket s = new java.net.Socket();
+        try {
+            if (DnsKit.protector != null) DnsKit.protector.protectSocket(s);
+            long t0 = System.currentTimeMillis();
+            s.connect(new java.net.InetSocketAddress(
+                    java.net.InetAddress.getByAddress(ip), 443), 1500);
+            return (int) (System.currentTimeMillis() - t0);
+        } catch (Exception e) {
+            return Integer.MAX_VALUE;   // мёртвый IP — в конец списка
+        } finally {
+            try { s.close(); } catch (Exception ignored) { }
+        }
+    }
+
+    /** Сортирует IP по возрастанию задержки — самые быстрые первыми в DNS-ответе. */
+    private static List<byte[]> sortByRtt(List<byte[]> ips) {
+        try {
+            List<byte[]> copy = new java.util.ArrayList<>(ips);
+            java.util.Map<byte[], Integer> rtt = new java.util.HashMap<>();
+            for (byte[] ip : copy) rtt.put(ip, rttMs(ip));
+            copy.sort((a, b) -> Integer.compare(rtt.get(a), rtt.get(b)));
+            LAST_RTT_MS = rtt.get(copy.get(0));
+            return copy;
+        } catch (Exception e) {
+            return ips;   // без сортировки, если что-то пошло не так
+        }
+    }
+
+    /** Строка для отчёта: лучший IP зеркала и его задержка. */
+    public static String bestMirrorInfo() {
+        List<byte[]> ips = MIRROR_IPS.get("tr.rbxcdn.com");
+        if (ips == null || ips.isEmpty()) return "нет IP";
+        byte[] b = ips.get(0);
+        String ipStr = (b[0] & 0xFF) + "." + (b[1] & 0xFF) + "." + (b[2] & 0xFF) + "." + (b[3] & 0xFF);
+        return ipStr + (LAST_RTT_MS < Integer.MAX_VALUE ? " (" + LAST_RTT_MS + " мс)" : "");
     }
 
     /** Переписывать ли этот запрос (только A/AAAA по известным хостам). */

@@ -54,10 +54,12 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     private java.util.List<String> findRobloxPackages() {
         java.util.List<String> out = new ArrayList<>();
         try {
+            String self = getPackageName();
             for (android.content.pm.PackageInfo pi
                     : getPackageManager().getInstalledPackages(0)) {
                 String n = pi.packageName;
-                if (n != null && n.toLowerCase(java.util.Locale.ROOT).contains("roblox")) {
+                if (n != null && !n.equals(self)
+                        && n.toLowerCase(java.util.Locale.ROOT).contains("roblox")) {
                     out.add(n);
                 }
             }
@@ -74,9 +76,10 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         public volatile String perApp = "?";
         public String report() {
             long up = startedAt == 0 ? 0 : (System.currentTimeMillis() - startedAt) / 1000;
-            return "Roblox Images Fix v1.3.0\n"
+            return "Roblox Images Fix v1.4.0\n"
                     + "работает: " + (running ? "да (" + up + " c)" : "нет") + "\n"
                     + "per-app: " + perApp + "\n"
+                    + "зеркало картинок: " + com.robloxfix.rfimages.MirrorConfig.bestMirrorInfo() + "\n"
                     + "пакетов из TUN: " + packets + "\n"
                     + "DNS-запросов: " + dnsQueries + "\n"
                     + "переписано (rbxcdn): " + rewritten + "\n"
@@ -97,6 +100,8 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     private static final String[] FALLBACK_DNS = {"77.88.8.8", "8.8.8.8", "1.1.1.1"};
 
     public static volatile boolean running = false;
+    /** Флаг «пользователь хочет выключить»: переживает воскрешение сервиса системой. */
+    public static volatile boolean userWantsOff = false;
 
     private ParcelFileDescriptor tun;
     private FileOutputStream tunOut;
@@ -149,6 +154,14 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (userWantsOff) {
+            // система может воскресить START_STICKY-сервис — немедленно гасимся
+            try {
+                stopForeground(STOP_FOREGROUND_REMOVE);
+            } catch (Exception ignored) { }
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         startAsForeground();
         if (!establishTunnel()) {
             Log.e(TAG, "Не удалось поднять туннель");

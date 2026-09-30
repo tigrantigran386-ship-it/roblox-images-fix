@@ -205,14 +205,24 @@ public final class DnsKit {
         return readAll(in);
     }
 
-    /** Классический UDP DNS (последний фолбэк). */
-    public static byte[] udpQuery(byte[] query) throws IOException {
+    // ── обычные (не переписываемые) запросы: пересылка на DNS оператора ──
+
+    private static volatile List<byte[]> upstreams = new ArrayList<>();
+
+    /** Список апстримов (DNS сети + запасные). Устанавливается сервисом. */
+    public static void setUpstreams(List<byte[]> ips) {
+        upstreams = new ArrayList<>(ips);
+    }
+
+    /** Один UDP-запрос на конкретный DNS-сервер (защищённый сокет). */
+    private static byte[] udpTo(byte[] query, byte[] serverIp, int timeoutMs) throws IOException {
         DatagramSocket s = new DatagramSocket(null);
         if (protector != null) protector.protectSocket(s);
         s.bind(new java.net.InetSocketAddress(0));
         try {
-            s.setSoTimeout(4000);
-            s.send(new DatagramPacket(query, query.length, InetAddress.getByName("1.1.1.1"), 53));
+            s.setSoTimeout(timeoutMs);
+            s.send(new DatagramPacket(query, query.length,
+                    InetAddress.getByAddress(serverIp), 53));
             byte[] buf = new byte[4096];
             DatagramPacket rp = new DatagramPacket(buf, buf.length);
             s.receive(rp);
@@ -222,20 +232,46 @@ public final class DnsKit {
         }
     }
 
-    /** Запрос к апстримам по цепочке: Cloudflare → Google → UDP 1.1.1.1. */
+    /**
+     * Быстрая пересылка на обычные DNS-серверы (оператора + запасные).
+     * Ведёт себя ровно как DNS телефона без VPN — та же скорость.
+     */
+    public static byte[] forwardPlain(byte[] query) {
+        for (byte[] ip : upstreams) {
+            try {
+                return udpTo(query, ip, 2500);
+            } catch (Exception ignored) { }
+        }
+        return null;
+    }
+
+    /** Запасной путь: DoH Cloudflare → Google → обычный UDP на 1.1.1.1. */
     public static byte[] upstreamQuery(byte[] query) {
         for (String url : DOH_URLS) {
             try { return dohQuery(url, query); } catch (Exception ignored) { }
         }
-        try { return udpQuery(query); } catch (Exception ignored) { }
+        try { return udpTo(query, new byte[]{1, 1, 1, 1}, 3000); } catch (Exception ignored) { }
         return null;
     }
 
-    /** Резолвит A-записи хоста через DoH (для получения IP зеркал). */
+    /** SERVFAIL-ответ: клиент сразу понимает, что надо повторить, а не ждёт вечно. */
+    public static byte[] buildServFail(Query q) {
+        try {
+            ByteArrayOutputStream o = new ByteArrayOutputStream();
+            writeHeader(o, q.id, 0x8182, 0);           // QR=1, RCODE=2 (SERVFAIL)
+            o.write(q.raw, 12, q.qEnd - 12);
+            return o.toByteArray();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /** Резолвит A-записи хоста: сперва обычный DNS, затем DoH (для IP зеркал). */
     public static List<byte[]> resolveA4(String host) {
         try {
             byte[] q = buildQuery(host, TYPE_A);
-            byte[] resp = upstreamQuery(q);
+            byte[] resp = forwardPlain(q);
+            if (resp == null) resp = upstreamQuery(q);
             if (resp == null) return null;
             return parseARecords(resp);
         } catch (Exception e) {

@@ -14,7 +14,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 
-import java.net.InetAddress;
 import java.util.List;
 
 public class MainActivity extends Activity {
@@ -123,7 +122,7 @@ public class MainActivity extends Activity {
         // результат про уведомления ни на что не влияет
     }
 
-    /** Проверка: резолвится ли tr.rbxcdn.com на IP зеркала (значит, фикс работает). */
+    /** Проверка: живо ли CloudFront-зеркало прямо сейчас (с этого устройства). */
     private void runCheck() {
         checkBtn.setEnabled(false);
         checkView.setText(R.string.check_running);
@@ -134,12 +133,11 @@ public class MainActivity extends Activity {
             } else {
                 String r;
                 try {
-                    InetAddress[] addrs = InetAddress.getAllByName("tr.rbxcdn.com");
-                    boolean ok = false;
-                    for (InetAddress a : addrs) {
-                        if (MirrorConfig.isMirrorIp(a.getAddress())) { ok = true; break; }
-                    }
-                    r = ok ? getString(R.string.check_ok) : getString(R.string.check_fail);
+                    List<byte[]> ips = DnsKit.resolveA4(
+                            MirrorConfig.HOST_TO_MIRROR.get("tr.rbxcdn.com"));
+                    r = (ips != null && !ips.isEmpty())
+                            ? getString(R.string.check_ok)
+                            : getString(R.string.check_fail);
                 } catch (Exception e) {
                     r = getString(R.string.check_fail);
                 }

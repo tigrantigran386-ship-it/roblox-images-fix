@@ -15,8 +15,8 @@
     <string name="check_btn">Проверить, работает ли фикс</string>
     <string name="check_hint">Нажми «Проверить» после включения.</string>
     <string name="check_running">Проверяю…</string>
-    <string name="check_ok">✅ Всё работает: tr.rbxcdn.com открывается через зеркало!</string>
-    <string name="check_fail">❌ Пока не работает. Выключи и включи фикс, перезапусти Roblox.</string>
+    <string name="check_ok">✅ Фикс активен, зеркало CloudFront отвечает. Полностью перезапусти Roblox (смахни из недавних)!</string>
+    <string name="check_fail">❌ Зеркало недоступно с этого устройства. Проверь интернет, выключи и включи фикс.</string>
     <string name="check_off">Сначала включи фикс кнопкой выше.</string>
 
     <string name="how_title">Как это работает</string>

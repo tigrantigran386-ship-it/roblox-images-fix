@@ -4,8 +4,11 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.ConnectivityManager;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.LinkProperties;
+import android.net.Network;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
@@ -14,33 +17,42 @@ import android.util.Log;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.Arrays;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Сердце приложения: точечный VPN-туннель.
+ * Сердце приложения: точечный VPN-туннель ДЛЯ ROBLOX (per-app).
  *
- * В туннель уходит ТОЛЬКО DNS-трафик (маршрут /32 на фиктивный DNS-сервер
- * 10.111.222.3). Весь остальной интернет идёт напрямую, без туннеля —
- * скорость не страдает.
- *
- * Логика: запросы *.rbxcdn.com перехватываются и на них отвечаем IP-адресами
- * CloudFront-зеркала (официального, байт-в-байт того же контента). Остальные
- * запросы пересылаются на апстримы Cloudflare/Google (DoH) и возвращаются
- * клиенту как есть.
+ * Ключевые принципы v1.1.0:
+ *  1. В туннель попадает ТОЛЬКО приложение Roblox (addAllowedPackage) —
+ *     остальные приложения живут своим обычным интернетом.
+ *  2. В туннель идёт только маршрут DNS-сервера /32, т.е. исключительно DNS.
+ *  3. Обычные запросы пересылаются на ОБЫЧНЫЙ DNS оператора (защищённым
+ *     сокетом) — так же быстро, как без VPN. DoH — только запасной путь.
+ *  4. Имена *.rbxcdn.com переписываются на CloudFront-зеркало.
+ *  5. Если апстрим не ответил — клиенту мгновенно уходит SERVFAIL
+ *     (чтобы Roblox не вис в вечном ожидании).
  */
 public class FixVpnService extends VpnService implements DnsKit.SocketProtector {
 
     private static final String TAG = "RbxFix";
     private static final String CHANNEL_ID = "rbxfix_channel";
     private static final int NOTIFICATION_ID = 1;
+    private static final String ROBLOX_PKG = "com.roblox.client";
 
-    /** Фиктивный DNS-сервер внутри туннеля (уникальный диапазон для бенчмарков RFC 5737-стиля). */
+    /** Фиктивный DNS-сервер внутри туннеля. */
     private static final byte[] DNS_SERVER_V4 = {10, 111, (byte) 222, 3};
     private static final String DNS_SERVER_STR = "10.111.222.3";
+
+    /** Запасные DNS, если не удалось узнать DNS оператора (Яндекс — работает в РФ). */
+    private static final String[] FALLBACK_DNS = {"77.88.8.8", "8.8.8.8", "1.1.1.1"};
 
     public static volatile boolean running = false;
 
@@ -61,18 +73,36 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     @Override
     public void onCreate() {
         super.onCreate();
-        DnsKit.protector = this;   // сокеты DoH не должны попадать в собственный туннель
+        DnsKit.protector = this;          // наши DoH/UDP-сокеты не должны попадать в свой же туннель
+        captureUpstreamDns();             // ДО установления туннеля: узнаём DNS оператора
         MirrorConfig.refreshAsync();
     }
 
-    @Override
-    public void protectSocket(java.net.Socket s) {
-        try { protect(s); } catch (Exception ignored) { }
-    }
-
-    @Override
-    public void protectSocket(java.net.DatagramSocket s) {
-        try { protect(s); } catch (Exception ignored) { }
+    /** Узнаём DNS-серверы текущей сети (то, что телефон использует без VPN). */
+    private void captureUpstreamDns() {
+        LinkedHashSet<String> servers = new LinkedHashSet<>();
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            Network net = cm.getActiveNetwork();
+            LinkProperties lp = cm.getLinkProperties(net);
+            if (lp != null) {
+                for (InetAddress a : lp.getDnsServers()) {
+                    if (a instanceof Inet4Address) servers.add(a.getHostAddress());
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "не удалось узнать DNS сети, использую запасные");
+        }
+        for (String fb : FALLBACK_DNS) servers.add(fb);
+        List<byte[]> ips = new ArrayList<>();
+        for (String s : servers) {
+            try {
+                byte[] b = InetAddress.getByName(s).getAddress();
+                if (b.length == 4) ips.add(b);
+            } catch (Exception ignored) { }
+        }
+        DnsKit.setUpstreams(ips);
+        Log.i(TAG, "апстримы DNS: " + servers);
     }
 
     @Override
@@ -84,9 +114,9 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             return START_NOT_STICKY;
         }
         running = true;
-        if (pool == null) pool = Executors.newFixedThreadPool(4);
+        if (pool == null || pool.isShutdown()) pool = Executors.newFixedThreadPool(8);
         startLoop();
-        Log.i(TAG, "Туннель запущен");
+        Log.i(TAG, "Туннель запущен (только для " + ROBLOX_PKG + ", только DNS)");
         return START_STICKY;
     }
 
@@ -121,12 +151,30 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     private boolean establishTunnel() {
         try {
             if (tun != null) { try { tun.close(); } catch (IOException ignored) { } tun = null; }
+
             Builder b = new Builder()
                     .setSession(getString(R.string.app_name))
                     .addAddress("10.111.222.1", 32)
                     .addDnsServer(DNS_SERVER_STR)
-                    .addRoute(DNS_SERVER_STR, 32)   // В ТУННЕЛЬ только DNS — остальное напрямую!
+                    .addRoute(DNS_SERVER_STR, 32)   // в туннель — только DNS
                     .setMtu(1500);
+
+            // ПЕРЕ-APP РЕЖИМ: туннель видит только Roblox.
+            // Если пакет Roblox не найден — работаем для всех (старое поведение).
+            boolean robloxInstalled = false;
+            try {
+                getPackageManager().getPackageInfo(ROBLOX_PKG, 0);
+                robloxInstalled = true;
+            } catch (Exception ignored) { }
+            if (robloxInstalled) {
+                try {
+                    b.addAllowedPackage(ROBLOX_PKG);
+                    Log.i(TAG, "per-app режим: только " + ROBLOX_PKG);
+                } catch (Exception e) {
+                    Log.w(TAG, "addAllowedPackage не сработал: " + e);
+                }
+            }
+
             tun = b.establish();
             if (tun == null) return false;
             tunOut = new FileOutputStream(tun.getFileDescriptor());
@@ -160,7 +208,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         loopThread.start();
     }
 
-    /** Разбирает пакет из TUN; реагирует только на DNS-запросы к нашему серверу. */
+    /** Разбирает пакет из TUN; реагирует только на DNS-запросы. */
     private void handlePacket(byte[] pkt, int len) {
         final DnsKit.Query q = DnsKit.parseUdpDns(pkt, len);
         if (q == null) return;
@@ -182,14 +230,18 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             return;
         }
 
-        // Остальное — в апстрим (DoH Cloudflare → Google → UDP 1.1.1.1)
+        // Остальное — на обычный DNS оператора (быстро), DoH в запасе
         final byte[] queryBytes = q.raw;
         pool.execute(() -> {
-            byte[] upstreamResp = DnsKit.upstreamQuery(queryBytes);
-            if (upstreamResp != null && upstreamResp.length >= 12) {
-                cache.put(cacheKey, new CacheEntry(upstreamResp, now + 60_000));
-                sendDns(q, upstreamResp);
+            byte[] resp = DnsKit.forwardPlain(queryBytes);
+            if (resp == null) resp = DnsKit.upstreamQuery(queryBytes); // DoH-запасной путь
+            if (resp != null && resp.length >= 12) {
+                cache.put(cacheKey, new CacheEntry(resp, now + 30_000));
+            } else {
+                // мгновенный SERVFAIL, чтобы Roblox не вис в ожидании
+                resp = DnsKit.buildServFail(q);
             }
+            sendDns(q, resp);
         });
     }
 
@@ -208,8 +260,17 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     }
 
     @Override
+    public void protectSocket(java.net.Socket s) {
+        try { protect(s); } catch (Exception ignored) { }
+    }
+
+    @Override
+    public void protectSocket(java.net.DatagramSocket s) {
+        try { protect(s); } catch (Exception ignored) { }
+    }
+
+    @Override
     public void onRevoke() {
-        // Пользователь или система отключили VPN
         stopFix();
     }
 

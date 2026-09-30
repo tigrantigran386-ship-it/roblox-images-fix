@@ -32,7 +32,7 @@ import java.util.concurrent.Executors;
  * запросы пересылаются на апстримы Cloudflare/Google (DoH) и возвращаются
  * клиенту как есть.
  */
-public class FixVpnService extends VpnService {
+public class FixVpnService extends VpnService implements DnsKit.SocketProtector {
 
     private static final String TAG = "RbxFix";
     private static final String CHANNEL_ID = "rbxfix_channel";
@@ -61,7 +61,18 @@ public class FixVpnService extends VpnService {
     @Override
     public void onCreate() {
         super.onCreate();
+        DnsKit.protector = this;   // сокеты DoH не должны попадать в собственный туннель
         MirrorConfig.refreshAsync();
+    }
+
+    @Override
+    public void protectSocket(java.net.Socket s) {
+        try { protect(s); } catch (Exception ignored) { }
+    }
+
+    @Override
+    public void protectSocket(java.net.DatagramSocket s) {
+        try { protect(s); } catch (Exception ignored) { }
     }
 
     @Override
@@ -109,6 +120,7 @@ public class FixVpnService extends VpnService {
 
     private boolean establishTunnel() {
         try {
+            if (tun != null) { try { tun.close(); } catch (IOException ignored) { } tun = null; }
             Builder b = new Builder()
                     .setSession(getString(R.string.app_name))
                     .addAddress("10.111.222.1", 32)

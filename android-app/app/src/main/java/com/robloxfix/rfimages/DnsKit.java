@@ -23,6 +23,15 @@ public final class DnsKit {
     public static final int TYPE_A = 1;
     public static final int TYPE_AAAA = 28;
 
+    /** Кто-то, кто умеет «защищать» сокеты от нашего же VPN (реализует FixVpnService). */
+    public interface SocketProtector {
+        void protectSocket(java.net.Socket s);
+        void protectSocket(java.net.DatagramSocket s);
+    }
+
+    /** Устанавливается сервисом при старте; null = защиты нет (тестовое окружение). */
+    public static volatile SocketProtector protector;
+
     /** Разобранный DNS-запрос + метаданные для сборки ответа. */
     public static final class Query {
         public int id;
@@ -172,6 +181,10 @@ public final class DnsKit {
     /** DoH по RFC 8484: POST application/dns-message. Возвращает ответ апстрима как есть. */
     public static byte[] dohQuery(String url, byte[] query) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+        if (c instanceof javax.net.ssl.HttpsURLConnection) {
+            ((javax.net.ssl.HttpsURLConnection) c).setSSLSocketFactory(
+                    ProtectedSSLSocketFactory.get());
+        }
         c.setRequestMethod("POST");
         c.setDoOutput(true);
         c.setConnectTimeout(5000);
@@ -194,7 +207,9 @@ public final class DnsKit {
 
     /** Классический UDP DNS (последний фолбэк). */
     public static byte[] udpQuery(byte[] query) throws IOException {
-        DatagramSocket s = new DatagramSocket();
+        DatagramSocket s = new DatagramSocket(null);
+        if (protector != null) protector.protectSocket(s);
+        s.bind(new java.net.InetSocketAddress(0));
         try {
             s.setSoTimeout(4000);
             s.send(new DatagramPacket(query, query.length, InetAddress.getByName("1.1.1.1"), 53));

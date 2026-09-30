@@ -7,6 +7,7 @@ import android.content.pm.PackageManager;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
@@ -56,6 +57,18 @@ public class MainActivity extends Activity {
         boolean on = FixVpnService.running;
         statusView.setText(on ? R.string.status_on : R.string.status_off);
         toggleBtn.setText(on ? R.string.turn_off : R.string.turn_on);
+        // Строгий Приватный DNS обходит наш перехват — предупреждаем сразу
+        if (on && isStrictPrivateDnsOn()) checkView.setText(R.string.pdns_warning);
+    }
+
+    /** true, если включён строгий «Приватный DNS» (DoT к конкретному хосту). */
+    private boolean isStrictPrivateDnsOn() {
+        try {
+            String mode = Settings.Global.getString(getContentResolver(), "private_dns_mode");
+            return "hostname".equals(mode) || "specify".equals(mode);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private void toggle() {

@@ -1,0 +1,58 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "transform": { "host": "d77muyc5iodv8.cloudfront.net" }
+      }
+    },
+    "condition": {
+      "requestDomains": ["tr.rbxcdn.com"],
+      "resourceTypes": ["image"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "transform": { "host": "djm1c8bbf58td.cloudfront.net" }
+      }
+    },
+    "condition": {
+      "requestDomains": ["t0.rbxcdn.com"],
+      "resourceTypes": ["image"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "transform": { "host": "dy9nmzn7lz0hh.cloudfront.net" }
+      }
+    },
+    "condition": {
+      "requestDomains": ["t1.rbxcdn.com"],
+      "resourceTypes": ["image"]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "transform": { "host": "d1cn2tk5nesoa7.cloudfront.net" }
+      }
+    },
+    "condition": {
+      "requestDomains": ["t5.rbxcdn.com"],
+      "resourceTypes": ["image"]
+    }
+  }
+]

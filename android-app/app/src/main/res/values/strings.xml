@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Roblox Images Fix</string>
+
+    <string name="notif_title">Roblox Images Fix включён</string>
+    <string name="notif_text">Картинки Roblox загружаются через зеркало</string>
+
+    <string name="status_on">✅ Фикс работает — картинки Roblox идут через зеркало</string>
+    <string name="status_off">⏸ Фикс выключен</string>
+    <string name="turn_on">ВКЛЮЧИТЬ</string>
+    <string name="turn_off">ВЫКЛЮЧИТЬ</string>
+    <string name="started_toast">Фикс запущен. Полностью перезапусти Roblox!</string>
+    <string name="vpn_denied">Без разрешения VPN фикс работать не может.</string>
+
+    <string name="check_btn">Проверить, работает ли фикс</string>
+    <string name="check_hint">Нажми «Проверить» после включения.</string>
+    <string name="check_running">Проверяю…</string>
+    <string name="check_ok">✅ Всё работает: tr.rbxcdn.com открывается через зеркало!</string>
+    <string name="check_fail">❌ Пока не работает. Выключи и включи фикс, перезапусти Roblox.</string>
+    <string name="check_off">Сначала включи фикс кнопкой выше.</string>
+
+    <string name="how_title">Как это работает</string>
+    <string name="how_text">Приложение перехватывает только DNS-запросы картинок Roblox (rbxcdn.com) и отвечает адресами официального зеркала CloudFront — тот же самый контент, но без блокировки. Весь остальной интернет идёт напрямую, без туннеля и потери скорости. Никаких данных не собирается, аккаунту ничего не грозит: приложение не модифицирует сам Roblox.</string>
+    <string name="repo_link_text">Исходный код на GitHub →</string>
+</resources>

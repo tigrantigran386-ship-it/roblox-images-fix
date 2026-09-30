@@ -1,0 +1,42 @@
+name: Mirror health
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # каждые 6 часов
+  workflow_dispatch: {}      # кнопка Run manually
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check mirrors
+        id: check
+        run: python3 test/check_mirrors.py --out mirror-status.md
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirror-status
+          path: mirror-status.md
+
+      - name: Open issue if mirrors are broken
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue list --label mirrors-broken --state open > /tmp/existing.txt
+          if [ ! -s /tmp/existing.txt ]; then
+            gh issue create \
+              --title "🔴 Зеркала перестали работать — нужно обновить mirrorMap и rules.json" \
+              --body-file mirror-status.md \
+              --label mirrors-broken
+          else
+            echo "Issue уже открыт, пропускаю."
+          fi

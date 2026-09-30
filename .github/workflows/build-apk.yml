@@ -1,0 +1,59 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch: {}   # кнопка «Run» на вкладке Actions
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Create signing keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$GITHUB_WORKSPACE/rbxfix.jks" \
+            -storepass robloxfix -keypass robloxfix -alias rbxfix \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Roblox Images Fix, OU=RBXFIX, O=RBXFIX, C=RU"
+          echo "RBXFIX_STORE=$GITHUB_WORKSPACE/rbxfix.jks"  >> "$GITHUB_ENV"
+          echo "RBXFIX_STORE_PASS=robloxfix"                >> "$GITHUB_ENV"
+          echo "RBXFIX_KEY_ALIAS=rbxfix"                    >> "$GITHUB_ENV"
+          echo "RBXFIX_KEY_PASS=robloxfix"                  >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Copy APK with a friendly name
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk RobloxImagesFix.apk
+          ls -la RobloxImagesFix.apk
+
+      - name: Upload artifact (доступно на странице запуска Actions)
+        uses: actions/upload-artifact@v4
+        with:
+          name: RobloxImagesFix-apk
+          path: RobloxImagesFix.apk
+
+      - name: Attach to GitHub Release (при пуше тега v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: RobloxImagesFix.apk

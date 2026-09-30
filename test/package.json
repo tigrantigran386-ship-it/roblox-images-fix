@@ -1,0 +1,11 @@
+{
+  "name": "roblox-images-fix-tests",
+  "private": true,
+  "description": "Автотесты юзерскрипта Roblox Images Fix (нужен интернет только для npm i)",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

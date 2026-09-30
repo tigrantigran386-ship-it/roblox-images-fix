@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.robloxfix.rfimages'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.robloxfix.rfimages"
+        minSdk 24          // Android 7.0 — покрывает ~98% устройств
+        targetSdk 34       // Android 14
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    // Подпись релизной сборки берётся из переменных окружения (задаёт CI).
+    // Если переменных нет (локальная сборка) — релиз соберётся неподписанным,
+    // а debug-сборка всегда подписана автоматически.
+    signingConfigs {
+        release {
+            def ksPath = System.getenv("RBXFIX_STORE")
+            if (ksPath != null) {
+                storeFile file(ksPath)
+                storePassword System.getenv("RBXFIX_STORE_PASS")
+                keyAlias System.getenv("RBXFIX_KEY_ALIAS")
+                keyPassword System.getenv("RBXFIX_KEY_PASS")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (System.getenv("RBXFIX_STORE") != null) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+}

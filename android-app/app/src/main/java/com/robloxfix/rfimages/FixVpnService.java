@@ -4,7 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.content.ConnectivityManager;
+import android.net.ConnectivityManager;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.net.LinkProperties;
@@ -168,7 +168,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             } catch (Exception ignored) { }
             if (robloxInstalled) {
                 try {
-                    b.addAllowedPackage(ROBLOX_PKG);
+                    b.addAllowedApplication(ROBLOX_PKG);
                     Log.i(TAG, "per-app режим: только " + ROBLOX_PKG);
                 } catch (Exception e) {
                     Log.w(TAG, "addAllowedPackage не сработал: " + e);

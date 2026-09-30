@@ -77,6 +77,9 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         /** Сколько каких rbxcdn-хостов переписано: {"t5.rbxcdn.com": 42, ...} */
         public final java.util.concurrent.ConcurrentHashMap<String, Integer> rewriteByHost =
                 new java.util.concurrent.ConcurrentHashMap<>();
+        public volatile int passthrough;
+        public final java.util.concurrent.ConcurrentHashMap<String, Integer> passthroughByHost =
+                new java.util.concurrent.ConcurrentHashMap<>();
         public volatile String perApp = "?";
         public String report() {
             long up = startedAt == 0 ? 0 : (System.currentTimeMillis() - startedAt) / 1000;
@@ -84,7 +87,11 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             for (Map.Entry<String, Integer> e : rewriteByHost.entrySet()) {
                 byHost.append(e.getKey().split("\\.")[0]).append("=").append(e.getValue()).append(" ");
             }
-            return "Roblox Images Fix v1.6.0\n"
+            StringBuilder byPass = new StringBuilder();
+            for (Map.Entry<String, Integer> e : passthroughByHost.entrySet()) {
+                byPass.append(e.getKey().split("\\.")[0]).append("=").append(e.getValue()).append(" ");
+            }
+            return "Roblox Images Fix v1.7.0\n"
                     + "работает: " + (running ? "да (" + up + " c)" : "нет") + "\n"
                     + "per-app: " + perApp + "\n"
                     + "зеркало картинок: " + com.robloxfix.rfimages.MirrorConfig.bestMirrorInfo() + "\n"
@@ -92,6 +99,8 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                     + "DNS-запросов: " + dnsQueries + "\n"
                     + "переписано (rbxcdn): " + rewritten
                     + (byHost.length() > 0 ? " [" + byHost.toString().trim() + "]" : "") + "\n"
+                    + (byPass.length() > 0
+                        ? "мимо карты (апстрим): [" + byPass.toString().trim() + "]\n" : "")
                     + "переслано апстриму: " + forwarded + "\n"
                     + "ошибок апстрима: " + upstreamFail + " (SERVFAIL: " + servfail + ")\n"
                     + "ответов отправлено: " + sent + "\n"
@@ -305,9 +314,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             return;
         }
 
-        final boolean isRbxc = q.qname.endsWith(".rbxcdn.com") || q.qname.equals("rbxcdn.com");
-
-        if (isRbxc) {
+        if (MirrorConfig.shouldRewrite(q.qname, q.qtype)) {
             // A → IP зеркала; AAAA/HTTPS(65) → пустой ответ (клиент пойдёт по IPv4)
             byte[] resp;
             if (q.qtype == DnsKit.TYPE_A) {
@@ -323,6 +330,14 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                 sendDns(q, resp);
             }
             return;
+        }
+
+        // rbxcdn без зеркала — ЧЕСТНАЯ пересылка апстриму.
+        // (Раньше отвечали пусто — это ломало apis/fts внутри игры!)
+        if (q.qname.endsWith(".rbxcdn.com") || q.qname.equals("rbxcdn.com")) {
+            STATS.passthrough++;
+            Integer pc = STATS.passthroughByHost.get(q.qname);
+            STATS.passthroughByHost.put(q.qname, pc == null ? 1 : pc + 1);
         }
 
         // Остальное — на обычный DNS оператора (быстро), DoH в запасе

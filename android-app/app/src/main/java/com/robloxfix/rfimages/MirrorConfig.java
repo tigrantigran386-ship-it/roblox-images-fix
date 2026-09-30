@@ -1,5 +1,6 @@
 package com.robloxfix.rfimages;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +34,19 @@ public final class MirrorConfig {
         HOST_TO_MIRROR.put("t5.rbxcdn.com", "d1cn2tk5nesoa7.cloudfront.net");
         HOST_TO_MIRROR.put("t6.rbxcdn.com", "d175vdehdjtrx5.cloudfront.net");
         HOST_TO_MIRROR.put("t7.rbxcdn.com", "d1w9tx3idyd562.cloudfront.net");
+        // v1.7.0: контент-серверы плейса + API + настройки клиента
+        HOST_TO_MIRROR.put("apis.rbxcdn.com", "d3smszjb1gn4q5.cloudfront.net");
+        HOST_TO_MIRROR.put("fts.rbxcdn.com", "d2shmbw56nyjcv.cloudfront.net");
+        HOST_TO_MIRROR.put("c0.rbxcdn.com", "d13im6y9zsyqh9.cloudfront.net");
+        HOST_TO_MIRROR.put("c1.rbxcdn.com", "d1oarw5tzx06j3.cloudfront.net");
+        HOST_TO_MIRROR.put("c2.rbxcdn.com", "dppubz653919u.cloudfront.net");
+        HOST_TO_MIRROR.put("c3.rbxcdn.com", "dilj9xb91ln9g.cloudfront.net");
+        HOST_TO_MIRROR.put("c4.rbxcdn.com", "d12kacufhf987f.cloudfront.net");
+        HOST_TO_MIRROR.put("c5.rbxcdn.com", "d25sshj5zx2ni3.cloudfront.net");
+        HOST_TO_MIRROR.put("c6.rbxcdn.com", "d2es4svb0oebfz.cloudfront.net");
+        HOST_TO_MIRROR.put("c7.rbxcdn.com", "d1aly16ju3lgz1.cloudfront.net");
+        HOST_TO_MIRROR.put("clientsettings.rbxcdn.com", "d2v57ias1m20gl.cloudfront.net");
+        HOST_TO_MIRROR.put("static.rbxcdn.com", "d143j4fdqe1jki.cloudfront.net");
     }
 
     /** Страховочные IP зеркал (если DoH-обновление не удалось). */
@@ -65,6 +79,30 @@ public final class MirrorConfig {
         FALLBACK_IPS.put("t7.rbxcdn.com", new String[][]{
                 {"99", "86", "101", "128"}, {"99", "86", "101", "21"},
                 {"99", "86", "101", "112"}, {"99", "86", "101", "20"}});
+        FALLBACK_IPS.put("apis.rbxcdn.com", new String[][]{
+                {"108", "138", "94", "57"}, {"108", "138", "94", "13"}});
+        FALLBACK_IPS.put("fts.rbxcdn.com", new String[][]{
+                {"18", "238", "238", "72"}, {"18", "238", "238", "61"}});
+        FALLBACK_IPS.put("c0.rbxcdn.com", new String[][]{
+                {"52", "85", "129", "81"}, {"52", "85", "129", "33"}});
+        FALLBACK_IPS.put("c1.rbxcdn.com", new String[][]{
+                {"18", "238", "238", "125"}, {"18", "238", "238", "58"}});
+        FALLBACK_IPS.put("c2.rbxcdn.com", new String[][]{
+                {"18", "65", "238", "94"}, {"18", "65", "238", "92"}});
+        FALLBACK_IPS.put("c3.rbxcdn.com", new String[][]{
+                {"52", "85", "129", "4"}, {"52", "85", "129", "32"}});
+        FALLBACK_IPS.put("c4.rbxcdn.com", new String[][]{
+                {"99", "86", "101", "17"}, {"99", "86", "101", "93"}});
+        FALLBACK_IPS.put("c5.rbxcdn.com", new String[][]{
+                {"52", "85", "129", "2"}, {"52", "85", "129", "40"}});
+        FALLBACK_IPS.put("c6.rbxcdn.com", new String[][]{
+                {"143", "204", "160", "36"}, {"143", "204", "160", "28"}});
+        FALLBACK_IPS.put("c7.rbxcdn.com", new String[][]{
+                {"143", "204", "160", "90"}, {"143", "204", "160", "44"}});
+        FALLBACK_IPS.put("clientsettings.rbxcdn.com", new String[][]{
+                {"143", "204", "160", "74"}, {"143", "204", "160", "39"}});
+        FALLBACK_IPS.put("static.rbxcdn.com", new String[][]{
+                {"99", "86", "101", "7"}, {"99", "86", "101", "89"}});
     }
 
     /** Живые IP зеркал: rbxcdn-хост → список IPv4 (байты). */
@@ -97,13 +135,23 @@ public final class MirrorConfig {
         if (!LAST_REFRESH.compareAndSet(prev, now)) return;
 
         Thread t = new Thread(() -> {
+            // все хосты — параллельно (их теперь 20)
+            Map<String, List<byte[]>> results = new ConcurrentHashMap<>();
+            List<Thread> jobs = new ArrayList<>();
             for (Map.Entry<String, String> e : HOST_TO_MIRROR.entrySet()) {
-                List<byte[]> ips = DnsKit.resolveA4(e.getValue());
-                if (ips != null && !ips.isEmpty()) {
-                    ips = sortByRtt(ips);   // сортируем КАЖДЫЙ хост по живой задержке
-                    MIRROR_IPS.put(e.getKey(), ips);
-                }
+                Thread j = new Thread(() -> {
+                    List<byte[]> ips = DnsKit.resolveA4(e.getValue());
+                    if (ips != null && !ips.isEmpty()) {
+                        results.put(e.getKey(), sortByRtt(ips));
+                    }
+                }, "rbxfix-refresh-" + e.getKey());
+                jobs.add(j);
+                j.start();
             }
+            for (Thread j : jobs) {
+                try { j.join(8000); } catch (InterruptedException ignored) { }
+            }
+            MIRROR_IPS.putAll(results);
         }, "rbxfix-mirror-refresh");
         t.setDaemon(true);
         t.start();

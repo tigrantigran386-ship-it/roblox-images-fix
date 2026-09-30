@@ -91,7 +91,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             for (Map.Entry<String, Integer> e : passthroughByHost.entrySet()) {
                 byPass.append(e.getKey().split("\\.")[0]).append("=").append(e.getValue()).append(" ");
             }
-            return "Roblox Images Fix v1.8.0\n"
+            return "Roblox Images Fix v1.9.0\n"
                     + "работает: " + (running ? "да (" + up + " c)" : "нет") + "\n"
                     + "per-app: " + perApp + "\n"
                     + "зеркало картинок: " + com.robloxfix.rfimages.MirrorConfig.bestMirrorInfo() + "\n"
@@ -310,8 +310,13 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         final String cacheKey = q.qname + "/" + q.qtype;
         CacheEntry hit = cache.get(cacheKey);
         long now = System.currentTimeMillis();
-        if (hit != null && hit.expiresAt > now) {
-            sendDns(q, hit.response);
+        if (hit != null) {
+            if (hit.expiresAt > now) {
+                sendDns(q, hit.response);          // свежий кэш — мгновенно
+            } else {
+                sendDns(q, hit.response);          // устаревший — тоже мгновенно…
+                refreshCacheAsync(q, cacheKey);    // …а в фоне обновим (serve-stale)
+            }
             return;
         }
 
@@ -319,12 +324,12 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             // A → IP зеркала; AAAA/HTTPS(65) → пустой ответ (клиент пойдёт по IPv4)
             byte[] resp;
             if (q.qtype == DnsKit.TYPE_A) {
-                resp = MirrorConfig.answer(q);
+                resp = MirrorConfig.answer(q);     // из памяти, 0 мс
             } else {
                 resp = DnsKit.buildEmptyAnswer(q);
             }
             if (resp != null) {
-                cache.put(cacheKey, new CacheEntry(resp, now + 300_000));
+                cache.put(cacheKey, new CacheEntry(resp, now + 600_000));
                 STATS.rewritten++;
                 Integer c = STATS.rewriteByHost.get(q.qname);
                 STATS.rewriteByHost.put(q.qname, c == null ? 1 : c + 1);
@@ -361,6 +366,31 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                 resp = DnsKit.buildServFail(q);   // мгновенный отказ вместо зависания
             }
             sendDns(q, resp);
+        });
+    }
+
+    /** Serve-stale: обновляет устаревшую запись кэша в фоне (одна задача на ключ). */
+    private final java.util.Set<String> refreshing =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private void refreshCacheAsync(final DnsKit.Query q, final String cacheKey) {
+        if (!refreshing.add(cacheKey)) return;
+        final byte[] queryBytes = q.raw;
+        pool.execute(() -> {
+            try {
+                byte[] fresh = MirrorConfig.shouldRewrite(q.qname, q.qtype)
+                        ? (q.qtype == DnsKit.TYPE_A
+                            ? MirrorConfig.answer(q)
+                            : DnsKit.buildEmptyAnswer(q))
+                        : DnsKit.forwardPlain(queryBytes);
+                if (fresh == null) fresh = DnsKit.upstreamQuery(queryBytes);
+                if (fresh != null && fresh.length >= 12) {
+                    cache.put(cacheKey, new CacheEntry(fresh, System.currentTimeMillis() + 600_000));
+                }
+            } catch (Throwable ignored) {
+            } finally {
+                refreshing.remove(cacheKey);
+            }
         });
     }
 

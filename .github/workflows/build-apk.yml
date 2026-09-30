@@ -37,13 +37,14 @@ jobs:
           echo "RBXFIX_KEY_PASS=robloxfix"                  >> "$GITHUB_ENV"
 
       - name: Build release APK
+        working-directory: android-app
         run: |
           chmod +x gradlew
           ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
       - name: Copy APK with a friendly name
         run: |
-          cp app/build/outputs/apk/release/app-release.apk RobloxImagesFix.apk
+          cp android-app/app/build/outputs/apk/release/app-release.apk RobloxImagesFix.apk
           ls -la RobloxImagesFix.apk
 
       - name: Upload artifact (доступно на странице запуска Actions)

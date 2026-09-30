@@ -45,7 +45,32 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     private static final String TAG = "RbxFix";
     private static final String CHANNEL_ID = "rbxfix_channel";
     private static final int NOTIFICATION_ID = 1;
-    private static final String ROBLOX_PKG = "com.roblox.client";
+    /** Возможные имена пакетов Roblox (основной + магазинные варианты). */
+    private static final String[] ROBLOX_PACKAGES = {
+            "com.roblox.client", "com.roblox.client.samsung", "com.roblox.client.huawei"
+    };
+
+    /** Счётчики диагностики (видны в UI, кнопка «Скопировать отчёт»). */
+    public static final class Stats {
+        public volatile long startedAt;
+        public volatile int packets, dnsQueries, rewritten, forwarded, upstreamFail, servfail, sent, errors;
+        public volatile String perApp = "?";
+        public String report() {
+            long up = startedAt == 0 ? 0 : (System.currentTimeMillis() - startedAt) / 1000;
+            return "Roblox Images Fix v1.2.0\n"
+                    + "работает: " + (running ? "да (" + up + " c)" : "нет") + "\n"
+                    + "per-app: " + perApp + "\n"
+                    + "пакетов из TUN: " + packets + "\n"
+                    + "DNS-запросов: " + dnsQueries + "\n"
+                    + "переписано (rbxcdn): " + rewritten + "\n"
+                    + "переслано апстриму: " + forwarded + "\n"
+                    + "ошибок апстрима: " + upstreamFail + " (SERVFAIL: " + servfail + ")\n"
+                    + "ответов отправлено: " + sent + "\n"
+                    + "внутренних ошибок: " + errors + "\n";
+        }
+    }
+
+    public static final Stats STATS = new Stats();
 
     /** Фиктивный DNS-сервер внутри туннеля. */
     private static final byte[] DNS_SERVER_V4 = {10, 111, (byte) 222, 3};
@@ -114,9 +139,10 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             return START_NOT_STICKY;
         }
         running = true;
+        STATS.startedAt = System.currentTimeMillis();
         if (pool == null || pool.isShutdown()) pool = Executors.newFixedThreadPool(8);
         startLoop();
-        Log.i(TAG, "Туннель запущен (только для " + ROBLOX_PKG + ", только DNS)");
+        Log.i(TAG, "Туннель запущен (только Roblox, только DNS)");
         return START_STICKY;
     }
 
@@ -159,21 +185,19 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                     .addRoute(DNS_SERVER_STR, 32)   // в туннель — только DNS
                     .setMtu(1500);
 
-            // ПЕРЕ-APP РЕЖИМ: туннель видит только Roblox.
-            // Если пакет Roblox не найден — работаем для всех (старое поведение).
-            boolean robloxInstalled = false;
-            try {
-                getPackageManager().getPackageInfo(ROBLOX_PKG, 0);
-                robloxInstalled = true;
-            } catch (Exception ignored) { }
-            if (robloxInstalled) {
+            // ПЕРЕ-APP РЕЖИМ: туннель видит только Roblox (все варианты пакета).
+            int added = 0;
+            for (String pkg : ROBLOX_PACKAGES) {
                 try {
-                    b.addAllowedApplication(ROBLOX_PKG);
-                    Log.i(TAG, "per-app режим: только " + ROBLOX_PKG);
-                } catch (Exception e) {
-                    Log.w(TAG, "addAllowedPackage не сработал: " + e);
-                }
+                    getPackageManager().getPackageInfo(pkg, 0);
+                    b.addAllowedApplication(pkg);
+                    added++;
+                } catch (Exception ignored) { }
             }
+            STATS.perApp = added > 0
+                    ? "вкл (" + added + " пакетRoblox)"
+                    : "ВЫКЛ — пакет Roblox не найден, туннель для всех!";
+            Log.i(TAG, "per-app: " + STATS.perApp);
 
             tun = b.establish();
             if (tun == null) return false;
@@ -196,13 +220,16 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         }
         loopThread = new Thread(() -> {
             byte[] buf = new byte[32768];
-            try {
-                while (running) {
+            while (running) {
+                try {
                     int n = in.read(buf);
+                    if (n < 0) break;
                     if (n >= 28) handlePacket(buf, n);
+                } catch (Throwable t) {           // НИКАКОЕ исключение не убивает цикл
+                    STATS.errors++;
+                    if (running) Log.w(TAG, "packet err: " + t);
+                    try { Thread.sleep(20); } catch (InterruptedException ie) { break; }
                 }
-            } catch (IOException e) {
-                if (running) Log.w(TAG, "tun loop exit: " + e);
             }
         }, "rbxfix-loop");
         loopThread.start();
@@ -210,8 +237,10 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
 
     /** Разбирает пакет из TUN; реагирует только на DNS-запросы. */
     private void handlePacket(byte[] pkt, int len) {
+        STATS.packets++;
         final DnsKit.Query q = DnsKit.parseUdpDns(pkt, len);
         if (q == null) return;
+        STATS.dnsQueries++;
 
         final String cacheKey = q.qname + "/" + q.qtype;
         CacheEntry hit = cache.get(cacheKey);
@@ -221,10 +250,19 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             return;
         }
 
-        if (MirrorConfig.shouldRewrite(q.qname, q.qtype)) {
-            byte[] resp = MirrorConfig.answer(q);
+        final boolean isRbxc = q.qname.endsWith(".rbxcdn.com") || q.qname.equals("rbxcdn.com");
+
+        if (isRbxc) {
+            // A → IP зеркала; AAAA/HTTPS(65) → пустой ответ (клиент пойдёт по IPv4)
+            byte[] resp;
+            if (q.qtype == DnsKit.TYPE_A) {
+                resp = MirrorConfig.answer(q);
+            } else {
+                resp = DnsKit.buildEmptyAnswer(q);
+            }
             if (resp != null) {
                 cache.put(cacheKey, new CacheEntry(resp, now + 120_000));
+                STATS.rewritten++;
                 sendDns(q, resp);
             }
             return;
@@ -233,13 +271,19 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         // Остальное — на обычный DNS оператора (быстро), DoH в запасе
         final byte[] queryBytes = q.raw;
         pool.execute(() -> {
-            byte[] resp = DnsKit.forwardPlain(queryBytes);
-            if (resp == null) resp = DnsKit.upstreamQuery(queryBytes); // DoH-запасной путь
+            byte[] resp = null;
+            try {
+                resp = DnsKit.forwardPlain(queryBytes);
+                if (resp == null) resp = DnsKit.upstreamQuery(queryBytes); // DoH-запасной путь
+            } catch (Throwable t) {
+                STATS.errors++;
+            }
             if (resp != null && resp.length >= 12) {
+                STATS.forwarded++;
                 cache.put(cacheKey, new CacheEntry(resp, now + 30_000));
             } else {
-                // мгновенный SERVFAIL, чтобы Roblox не вис в ожидании
-                resp = DnsKit.buildServFail(q);
+                STATS.upstreamFail++; STATS.servfail++;
+                resp = DnsKit.buildServFail(q);   // мгновенный отказ вместо зависания
             }
             sendDns(q, resp);
         });
@@ -247,13 +291,15 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
 
     /** Отправляет DNS-ответ клиенту обратно через TUN. */
     private void sendDns(DnsKit.Query q, byte[] dnsResp) {
+        FileOutputStream out = tunOut;
+        if (out == null || dnsResp == null) return;
         try {
             byte[] pkt = DnsKit.buildUdp4Packet(
                     DNS_SERVER_V4, 53, q.clientAddr, q.clientPort, dnsResp);
-            synchronized (tunOut) {
-                tunOut.write(pkt);
-                tunOut.flush();
+            synchronized (out) {
+                out.write(pkt);
             }
+            STATS.sent++;
         } catch (IOException e) {
             // туннель закрывается — нормально
         }

@@ -6,6 +6,8 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.VpnService;
 import android.os.Build;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.view.View;
@@ -39,6 +41,7 @@ public class MainActivity extends Activity {
         toggleBtn.setOnClickListener(v -> toggle());
         checkBtn.setOnClickListener(v -> runCheck());
 
+        findViewById(R.id.copyReport).setOnClickListener(v -> copyReport());
         findViewById(R.id.repoLink).setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_VIEW,
                     android.net.Uri.parse("https://github.com/tigrantigran386-ship-it/roblox-images-fix"));
@@ -120,6 +123,19 @@ public class MainActivity extends Activity {
                                            int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         // результат про уведомления ни на что не влияет
+    }
+
+    /** Копирует диагностический отчёт в буфер обмена и показывает на экране. */
+    private void copyReport() {
+        String report = FixVpnService.STATS.report();
+        try {
+            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(ClipData.newPlainText("rbxfix", report));
+            }
+        } catch (Exception ignored) { }
+        checkView.setText(report);
+        Toast.makeText(this, R.string.report_copied, Toast.LENGTH_SHORT).show();
     }
 
     /** Проверка: живо ли CloudFront-зеркало прямо сейчас (с этого устройства). */

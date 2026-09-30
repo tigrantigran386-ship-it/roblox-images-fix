@@ -94,6 +94,7 @@ public final class DnsKit {
             q.qname = name;
             q.qtype = qtype;
             q.qEnd = end[0] + 4;
+            q.raw = dns;
             return q;
         } catch (Exception e) {
             return null;
@@ -126,13 +127,29 @@ public final class DnsKit {
 
     // ─────────────────────────── сборка ответов ───────────────────────────
 
+    /** Секция Question для ответа: из raw, а если его нет — собираем заново. */
+    private static byte[] questionBytes(Query q) throws IOException {
+        if (q.raw != null && q.qEnd <= q.raw.length) {
+            return Arrays.copyOfRange(q.raw, 12, q.qEnd);
+        }
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        for (String label : q.qname.split("\\.")) {
+            o.write(label.length());
+            o.write(label.getBytes("US-ASCII"));
+        }
+        o.write(0);
+        o.write((q.qtype >> 8) & 0xFF); o.write(q.qtype & 0xFF);
+        o.write(0); o.write(1);
+        return o.toByteArray();
+    }
+
     /** Ответ A-записями (IPv4) на домен из вопроса. */
     public static byte[] buildAAnswers(Query q, List<byte[]> ips) {
         try {
             ByteArrayOutputStream o = new ByteArrayOutputStream();
             int an = ips == null ? 0 : ips.size();
             writeHeader(o, q.id, 0x8180, an);              // QR=1 RD=1 RA=1 RCODE=0
-            o.write(q.raw, 12, q.qEnd - 12);               // секция Question как есть
+            o.write(questionBytes(q));
             if (ips != null) {
                 for (byte[] ip : ips) {
                     o.write(0xC0); o.write(12);            // имя — указатель на вопрос (офсет 12)
@@ -154,7 +171,7 @@ public final class DnsKit {
         try {
             ByteArrayOutputStream o = new ByteArrayOutputStream();
             writeHeader(o, q.id, 0x8180, 0);
-            o.write(q.raw, 12, q.qEnd - 12);
+            o.write(questionBytes(q));
             return o.toByteArray();
         } catch (IOException e) {
             return null;
@@ -259,7 +276,7 @@ public final class DnsKit {
         try {
             ByteArrayOutputStream o = new ByteArrayOutputStream();
             writeHeader(o, q.id, 0x8182, 0);           // QR=1, RCODE=2 (SERVFAIL)
-            o.write(q.raw, 12, q.qEnd - 12);
+            o.write(questionBytes(q));
             return o.toByteArray();
         } catch (IOException e) {
             return null;

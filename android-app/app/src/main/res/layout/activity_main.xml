@@ -41,6 +41,13 @@
             android:layout_marginTop="8dp"
             android:text="@string/check_btn" />
 
+        <Button
+            android:id="@+id/copyReport"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/copy_report" />
+
         <TextView
             android:id="@+id/checkResult"
             android:layout_width="match_parent"

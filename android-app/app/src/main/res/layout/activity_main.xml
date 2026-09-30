@@ -2,84 +2,121 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="#000000"
     android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="24dp">
+        android:padding="20dp">
 
         <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textSize="26sp"
-            android:textStyle="bold"
-            android:layout_marginTop="16dp" />
-
-        <TextView
-            android:id="@+id/status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:textSize="16sp"
-            android:text="@string/status_off" />
-
-        <Button
-            android:id="@+id/toggle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:textSize="18sp"
-            android:text="@string/turn_on" />
-
-        <Button
-            android:id="@+id/check"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/check_btn" />
-
-        <Button
-            android:id="@+id/copyReport"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="@string/copy_report" />
-
-        <TextView
-            android:id="@+id/checkResult"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textSize="14sp"
-            android:text="@string/check_hint" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="28dp"
-            android:text="@string/how_title"
-            android:textSize="18sp"
+            android:text="@string/app_name"
+            android:textColor="#FFFFFF"
+            android:textSize="26sp"
             android:textStyle="bold" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/tagline"
+            android:textColor="#8A93A3"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:background="@drawable/bg_pill"
+            android:padding="14dp"
+            android:text="@string/status_off"
+            android:textColor="#C9D1DC"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/toggle"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_btn_primary"
+            android:text="@string/turn_on"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="17sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/check"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_btn_ghost"
+            android:text="@string/check_btn"
+            android:textAllCaps="false"
+            android:textColor="#2EB85C"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/copyReport"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
             android:layout_marginTop="8dp"
-            android:textSize="14sp"
-            android:text="@string/how_text" />
+            android:background="@drawable/bg_btn_ghost"
+            android:text="@string/copy_report"
+            android:textAllCaps="false"
+            android:textColor="#2EB85C"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/checkResult"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:fontFamily="monospace"
+            android:text="@string/check_hint"
+            android:textColor="#8A93A3"
+            android:textSize="12sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/how_title"
+                android:textColor="#2EB85C"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/how_text"
+                android:textColor="#AAB3BF"
+                android:textSize="13sp" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/repoLink"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:layout_marginBottom="24dp"
-            android:textColor="#2eb85c"
-            android:textSize="14sp"
-            android:text="@string/repo_link_text" />
+            android:layout_marginBottom="20dp"
+            android:text="@string/repo_link_text"
+            android:textColor="#2EB85C"
+            android:textSize="13sp" />
 
     </LinearLayout>
 </ScrollView>

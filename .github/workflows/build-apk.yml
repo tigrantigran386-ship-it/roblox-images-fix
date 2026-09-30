@@ -42,19 +42,22 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:assembleRelease --no-daemon --stacktrace
 
-      - name: Copy APK with a friendly name
+      - name: Copy APK with versioned name
+        working-directory: android-app
         run: |
-          cp android-app/app/build/outputs/apk/release/app-release.apk RobloxImagesFix.apk
-          ls -la RobloxImagesFix.apk
+          VERSION=$(grep -o 'versionName "[^"]*"' app/build.gradle | cut -d'"' -f2)
+          cp app/build/outputs/apk/release/app-release.apk "../RobloxImagesFix-$VERSION.apk"
+          echo "APK_NAME=RobloxImagesFix-$VERSION.apk" >> "$GITHUB_ENV"
+          ls -la "../RobloxImagesFix-$VERSION.apk"
 
       - name: Upload artifact (доступно на странице запуска Actions)
         uses: actions/upload-artifact@v4
         with:
           name: RobloxImagesFix-apk
-          path: RobloxImagesFix.apk
+          path: RobloxImagesFix-*.apk
 
       - name: Attach to GitHub Release (при пуше тега v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: RobloxImagesFix.apk
+          files: ${{ env.APK_NAME }}

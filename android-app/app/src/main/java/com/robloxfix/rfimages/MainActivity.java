@@ -59,6 +59,9 @@ public class MainActivity extends Activity {
         boolean on = FixVpnService.running;
         statusView.setText(on ? R.string.status_on : R.string.status_off);
         toggleBtn.setText(on ? R.string.turn_off : R.string.turn_on);
+        toggleBtn.setBackgroundResource(on
+                ? R.drawable.bg_btn_ghost
+                : R.drawable.bg_btn_primary);
         toggleBtn.setEnabled(true);
         // Строгий Приватный DNS обходит наш перехват — предупреждаем сразу
         if (on && isStrictPrivateDnsOn()) checkView.setText(R.string.pdns_warning);

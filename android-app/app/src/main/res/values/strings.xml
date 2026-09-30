@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">Roblox Images Fix</string>
 
+    <string name="tagline">Картинки Roblox без VPN и без риска</string>
     <string name="notif_title">Roblox Images Fix включён</string>
     <string name="notif_text">Картинки Roblox загружаются через зеркало</string>
 

@@ -91,7 +91,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             for (Map.Entry<String, Integer> e : passthroughByHost.entrySet()) {
                 byPass.append(e.getKey().split("\\.")[0]).append("=").append(e.getValue()).append(" ");
             }
-            return "Roblox Images Fix v1.9.0\n"
+            return "Roblox Images Fix v1.0.0\n"
                     + "работает: " + (running ? "да (" + up + " c)" : "нет") + "\n"
                     + "per-app: " + perApp + "\n"
                     + "зеркало картинок: " + com.robloxfix.rfimages.MirrorConfig.bestMirrorInfo() + "\n"

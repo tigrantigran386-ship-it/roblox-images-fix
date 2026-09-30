@@ -44,6 +44,5 @@ android {
     }
 }
 
-dependencies {
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-}
+// Внешних зависимостей нет — только Android SDK.
+// Так сборка быстрее и не ломается о конфликты транзитивных библиотек.

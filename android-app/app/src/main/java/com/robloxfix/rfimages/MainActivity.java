@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
         boolean on = FixVpnService.running;
         statusView.setText(on ? R.string.status_on : R.string.status_off);
         toggleBtn.setText(on ? R.string.turn_off : R.string.turn_on);
+        toggleBtn.setEnabled(true);
         // Строгий Приватный DNS обходит наш перехват — предупреждаем сразу
         if (on && isStrictPrivateDnsOn()) checkView.setText(R.string.pdns_warning);
     }
@@ -75,8 +76,12 @@ public class MainActivity extends Activity {
 
     private void toggle() {
         if (FixVpnService.running) {
+            toggleBtn.setEnabled(false);
+            statusView.setText(R.string.status_stopping);
             stopService(new Intent(this, FixVpnService.class));
-            refreshStatus();
+            // сервис гаснет асинхронно — обновляем статус с задержками
+            statusView.postDelayed(this::refreshStatus, 400);
+            statusView.postDelayed(this::refreshStatus, 1500);
             checkView.setText(R.string.check_hint);
             return;
         }

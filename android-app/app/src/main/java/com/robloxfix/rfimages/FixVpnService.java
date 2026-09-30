@@ -45,10 +45,27 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     private static final String TAG = "RbxFix";
     private static final String CHANNEL_ID = "rbxfix_channel";
     private static final int NOTIFICATION_ID = 1;
-    /** Возможные имена пакетов Roblox (основной + магазинные варианты). */
+    /** Запасной список, если автопоиск не сработал. */
     private static final String[] ROBLOX_PACKAGES = {
             "com.roblox.client", "com.roblox.client.samsung", "com.roblox.client.huawei"
     };
+
+    /** Автопоиск всех установленных пакетов Roblox (по подстроке в имени). */
+    private java.util.List<String> findRobloxPackages() {
+        java.util.List<String> out = new ArrayList<>();
+        try {
+            for (android.content.pm.PackageInfo pi
+                    : getPackageManager().getInstalledPackages(0)) {
+                String n = pi.packageName;
+                if (n != null && n.toLowerCase(java.util.Locale.ROOT).contains("roblox")) {
+                    out.add(n);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "автопоиск пакетов не удался: " + e);
+        }
+        return out;
+    }
 
     /** Счётчики диагностики (видны в UI, кнопка «Скопировать отчёт»). */
     public static final class Stats {
@@ -57,7 +74,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         public volatile String perApp = "?";
         public String report() {
             long up = startedAt == 0 ? 0 : (System.currentTimeMillis() - startedAt) / 1000;
-            return "Roblox Images Fix v1.2.0\n"
+            return "Roblox Images Fix v1.3.0\n"
                     + "работает: " + (running ? "да (" + up + " c)" : "нет") + "\n"
                     + "per-app: " + perApp + "\n"
                     + "пакетов из TUN: " + packets + "\n"
@@ -185,18 +202,24 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                     .addRoute(DNS_SERVER_STR, 32)   // в туннель — только DNS
                     .setMtu(1500);
 
-            // ПЕРЕ-APP РЕЖИМ: туннель видит только Roblox (все варианты пакета).
-            int added = 0;
+            // ПЕРЕ-APP РЕЖИМ: сначала автопоиск по имени, потом запасной список.
+            java.util.LinkedHashSet<String> pkgs = new java.util.LinkedHashSet<>(findRobloxPackages());
             for (String pkg : ROBLOX_PACKAGES) {
                 try {
                     getPackageManager().getPackageInfo(pkg, 0);
+                    pkgs.add(pkg);
+                } catch (Exception ignored) { }
+            }
+            int added = 0;
+            for (String pkg : pkgs) {
+                try {
                     b.addAllowedApplication(pkg);
                     added++;
                 } catch (Exception ignored) { }
             }
             STATS.perApp = added > 0
-                    ? "вкл (" + added + " пакетRoblox)"
-                    : "ВЫКЛ — пакет Roblox не найден, туннель для всех!";
+                    ? "вкл (" + pkgs + ")"
+                    : "ВЫКЛ — пакет Roblox не найден, туннель для всех";
             Log.i(TAG, "per-app: " + STATS.perApp);
 
             tun = b.establish();
@@ -327,7 +350,17 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     }
 
     private void stopFix() {
+        boolean wasRunning = running;
         running = false;
+        if (wasRunning) {
+            try {
+                if (Build.VERSION.SDK_INT >= 24) {
+                    stopForeground(STOP_FOREGROUND_REMOVE);
+                } else {
+                    stopForeground(true);
+                }
+            } catch (Exception ignored) { }
+        }
         cache.clear();
         if (pool != null) {
             pool.shutdownNow();

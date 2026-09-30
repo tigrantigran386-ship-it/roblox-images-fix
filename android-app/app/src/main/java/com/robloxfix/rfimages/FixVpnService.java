@@ -74,16 +74,24 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         public volatile long startedAt;
         public volatile int packets, dnsQueries, rewritten, forwarded, upstreamFail, servfail, sent, errors;
         public volatile String lastError = "-";
+        /** Сколько каких rbxcdn-хостов переписано: {"t5.rbxcdn.com": 42, ...} */
+        public final java.util.concurrent.ConcurrentHashMap<String, Integer> rewriteByHost =
+                new java.util.concurrent.ConcurrentHashMap<>();
         public volatile String perApp = "?";
         public String report() {
             long up = startedAt == 0 ? 0 : (System.currentTimeMillis() - startedAt) / 1000;
-            return "Roblox Images Fix v1.4.0\n"
+            StringBuilder byHost = new StringBuilder();
+            for (Map.Entry<String, Integer> e : rewriteByHost.entrySet()) {
+                byHost.append(e.getKey().split("\\.")[0]).append("=").append(e.getValue()).append(" ");
+            }
+            return "Roblox Images Fix v1.6.0\n"
                     + "работает: " + (running ? "да (" + up + " c)" : "нет") + "\n"
                     + "per-app: " + perApp + "\n"
                     + "зеркало картинок: " + com.robloxfix.rfimages.MirrorConfig.bestMirrorInfo() + "\n"
                     + "пакетов из TUN: " + packets + "\n"
                     + "DNS-запросов: " + dnsQueries + "\n"
-                    + "переписано (rbxcdn): " + rewritten + "\n"
+                    + "переписано (rbxcdn): " + rewritten
+                    + (byHost.length() > 0 ? " [" + byHost.toString().trim() + "]" : "") + "\n"
                     + "переслано апстриму: " + forwarded + "\n"
                     + "ошибок апстрима: " + upstreamFail + " (SERVFAIL: " + servfail + ")\n"
                     + "ответов отправлено: " + sent + "\n"
@@ -308,8 +316,10 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                 resp = DnsKit.buildEmptyAnswer(q);
             }
             if (resp != null) {
-                cache.put(cacheKey, new CacheEntry(resp, now + 120_000));
+                cache.put(cacheKey, new CacheEntry(resp, now + 300_000));
                 STATS.rewritten++;
+                Integer c = STATS.rewriteByHost.get(q.qname);
+                STATS.rewriteByHost.put(q.qname, c == null ? 1 : c + 1);
                 sendDns(q, resp);
             }
             return;

@@ -221,7 +221,7 @@ public final class DnsKit {
                     o.write(0xC0); o.write(12);            // имя — указатель на вопрос (офсет 12)
                     o.write(0); o.write(TYPE_A);           // type A
                     o.write(0); o.write(1);                // class IN
-                    o.write(0); o.write(0); o.write(0); o.write(120); // TTL 120 сек
+                    o.write(0); o.write(0); o.write(1); o.write(44); // TTL 300 сек
                     o.write(0); o.write(4);                // RDLENGTH
                     o.write(ip, 0, 4);
                 }
@@ -270,8 +270,8 @@ public final class DnsKit {
         }
         c.setRequestMethod("POST");
         c.setDoOutput(true);
-        c.setConnectTimeout(5000);
-        c.setReadTimeout(5000);
+        c.setConnectTimeout(3000);
+        c.setReadTimeout(3000);
         c.setRequestProperty("Content-Type", "application/dns-message");
         c.setRequestProperty("Accept", "application/dns-message");
         OutputStream os = null;
@@ -322,7 +322,7 @@ public final class DnsKit {
     public static byte[] forwardPlain(byte[] query) {
         for (byte[] ip : upstreams) {
             try {
-                return udpTo(query, ip, 2500);
+                return udpTo(query, ip, 1200);
             } catch (Exception ignored) { }
         }
         return null;
@@ -333,7 +333,7 @@ public final class DnsKit {
         for (String url : DOH_URLS) {
             try { return dohQuery(url, query); } catch (Exception ignored) { }
         }
-        try { return udpTo(query, new byte[]{1, 1, 1, 1}, 3000); } catch (Exception ignored) { }
+        try { return udpTo(query, new byte[]{1, 1, 1, 1}, 1500); } catch (Exception ignored) { }
         return null;
     }
 

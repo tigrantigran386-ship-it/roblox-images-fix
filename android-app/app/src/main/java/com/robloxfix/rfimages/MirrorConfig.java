@@ -139,7 +139,7 @@ public final class MirrorConfig {
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private static final AtomicLong LAST_REFRESH = new AtomicLong(0);
-    private static final long REFRESH_INTERVAL_MS = 10 * 60 * 1000; // 10 минут
+    private static final long REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 минут — быстрее заменяем умершие IP
 
     private MirrorConfig() {}
 

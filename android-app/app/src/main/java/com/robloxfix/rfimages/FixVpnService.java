@@ -72,7 +72,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     /** Счётчики диагностики (видны в UI, кнопка «Скопировать отчёт»). */
     public static final class Stats {
         public volatile long startedAt;
-        public volatile int packets, dnsQueries, rewritten, forwarded, upstreamFail, servfail, sent, errors;
+        public volatile int packets, dnsQueries, rewritten, forwarded, upstreamFail, servfail, sent, errors, deduped;
         public volatile String lastError = "-";
         /** Сколько каких rbxcdn-хостов переписано: {"t5.rbxcdn.com": 42, ...} */
         public final java.util.concurrent.ConcurrentHashMap<String, Integer> rewriteByHost =
@@ -104,7 +104,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                     + com.robloxfix.rfimages.MirrorConfig.dynamicInfo()
                     + "переслано апстриму: " + forwarded + "\n"
                     + "ошибок апстрима: " + upstreamFail + " (SERVFAIL: " + servfail + ")\n"
-                    + "ответов отправлено: " + sent + "\n"
+                    + "ответов отправлено: " + sent + " (дублей отброшено: " + deduped + ")\n"
                     + "внутренних ошибок: " + errors + (errors > 0 ? " (последняя: " + lastError + ")" : "") + "\n";
         }
     }
@@ -197,7 +197,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         }
         running = true;
         STATS.startedAt = System.currentTimeMillis();
-        if (pool == null || pool.isShutdown()) pool = Executors.newFixedThreadPool(8);
+        if (pool == null || pool.isShutdown()) pool = Executors.newFixedThreadPool(16);
         startLoop();
         Log.i(TAG, "Туннель запущен (только Roblox, только DNS)");
         return START_STICKY;
@@ -347,7 +347,13 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             MirrorConfig.discoverAsync(q.qname);   // вдруг у него есть зеркало — найдём
         }
 
-        // Остальное — на обычный DNS оператора (быстро), DoH в запасе
+        // Остальное — на обычный DNS оператора (быстро), DoH в запасе.
+        // Дедупликация: если такой запрос уже летит — не ставим в очередь дубль
+        // (Roblox сам повторит; когда ответ придёт, он будет в кэше).
+        if (!inFlight.add(cacheKey)) {
+            STATS.deduped++;
+            return;
+        }
         final byte[] queryBytes = q.raw;
         pool.execute(() -> {
             byte[] resp = null;
@@ -356,10 +362,12 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                 if (resp == null) resp = DnsKit.upstreamQuery(queryBytes); // DoH-запасной путь
             } catch (Throwable t) {
                 STATS.errors++;
+            } finally {
+                inFlight.remove(cacheKey);
             }
             if (resp != null && resp.length >= 12) {
                 STATS.forwarded++;
-                cache.put(cacheKey, new CacheEntry(resp, now + 30_000));
+                cache.put(cacheKey, new CacheEntry(resp, now + 120_000));
             } else {
                 STATS.upstreamFail++; STATS.servfail++;
                 STATS.lastError = "апстрим DNS не ответил";
@@ -371,6 +379,10 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
 
     /** Serve-stale: обновляет устаревшую запись кэша в фоне (одна задача на ключ). */
     private final java.util.Set<String> refreshing =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** Запросы, уже летящие к апстриму (один на ключ) — защита от «взрывов» повторов. */
+    private final java.util.Set<String> inFlight =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private void refreshCacheAsync(final DnsKit.Query q, final String cacheKey) {

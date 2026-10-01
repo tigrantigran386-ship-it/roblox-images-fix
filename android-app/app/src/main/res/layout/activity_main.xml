@@ -63,6 +63,18 @@
             android:textSize="14sp" />
 
         <Button
+            android:id="@+id/tgLink"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_btn_tg"
+            android:text="@string/tg_btn"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <Button
             android:id="@+id/copyReport"
             android:layout_width="match_parent"
             android:layout_height="48dp"

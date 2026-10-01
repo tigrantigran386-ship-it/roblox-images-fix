@@ -25,6 +25,7 @@
     <string name="pdns_warning">⚠️ У тебя включён строгий «Приватный DNS» — он работает МИМО фикса! Зайди: Настройки → Сеть и интернет → Приватный DNS → выбери «Автоматически». Затем выключи и включи фикс, перезапусти Roblox.</string>
     <string name="alwayson_warning">⚠️ В системе для этого приложения включён режим «Всегда включён VPN» — система перезапускает фикс. Открой: Настройки → VPN (Сети) → шестерёнка рядом с Roblox Images Fix → выключи «Всегда включён».</string>
     <string name="status_stopping">⏸ Останавливаю…</string>
+    <string name="tg_btn">💬 Наш Telegram-канал</string>
     <string name="copy_report">Скопировать отчёт (для разработчика)</string>
     <string name="report_copied">Отчёт скопирован — отправь его разработчику</string>
     <string name="repo_link_text">Исходный код на GitHub →</string>

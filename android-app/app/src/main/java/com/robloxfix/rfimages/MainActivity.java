@@ -41,6 +41,11 @@ public class MainActivity extends Activity {
         toggleBtn.setOnClickListener(v -> toggle());
         checkBtn.setOnClickListener(v -> runCheck());
 
+        findViewById(R.id.tgLink).setOnClickListener(v -> {
+            Intent tg = new Intent(Intent.ACTION_VIEW,
+                    android.net.Uri.parse("https://t.me/RobloxImagesFIX"));
+            try { startActivity(tg); } catch (Exception ignored) { }
+        });
         findViewById(R.id.copyReport).setOnClickListener(v -> copyReport());
         findViewById(R.id.repoLink).setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_VIEW,

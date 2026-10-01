@@ -30,7 +30,7 @@ EXPECTED = {
     "t5.rbxcdn.com": "d1cn2tk5nesoa7.cloudfront.net",
 }
 
-USERSCRIPT = "userscript/roblox-images-fix.user.js"
+MIRROR_JAVA = "android-app/app/src/main/java/com/robloxfix/rfimages/MirrorConfig.java"
 UA = {"User-Agent": "roblox-images-fix-healthcheck/1.0"}
 
 
@@ -57,16 +57,15 @@ def doh_resolve(name):
     return cur, []
 
 
-def current_mirrors_from_userscript():
-    """Вытаскивает mirrorMap из кода юзерскрипта (единый источник правды)."""
+def current_mirrors_from_code():
+    """Вытаскивает карту зеркал из MirrorConfig.java (единый источник правды)."""
     try:
-        src = open(USERSCRIPT, encoding="utf-8").read()
+        src = open(MIRROR_JAVA, encoding="utf-8").read()
     except OSError:
         return {}
-    block = re.search(r"mirrorMap:\s*\{(.*?)\}", src, re.S)
-    if not block:
-        return {}
-    return dict(re.findall(r"'([\w.]+)':\s*'([\w.-]+)'", block.group(1)))
+    block = re.search(r"HOST_TO_MIRROR.put\((.*?)\);", src, re.S)
+    pairs = re.findall(r'"([\w.]+\.rbxcdn\.com)",\s*"([\w.-]+\.cloudfront\.net)"', src)
+    return dict(pairs)
 
 
 def distribution_alive(mirror):
@@ -114,7 +113,7 @@ def main():
     ap.add_argument("--out", help="куда писать отчёт (по умолчанию stdout)")
     args = ap.parse_args()
 
-    script_map = current_mirrors_from_userscript()
+    script_map = current_mirrors_from_code()
     lines = ["# 🩺 Mirror health report", ""]
     problems = 0
 
@@ -122,12 +121,12 @@ def main():
         label = host.split(".")[0]              # tr / t0 / t1 / t5
         cname, ips = doh_resolve(f"{label}aws.rbxcdn.com")
         lines.append(f"## `{host}`")
-        lines.append(f"- mirrorMap юзерскрипта: `{script_map.get(host, '❌ не найдено')}`")
+        lines.append(f"- в MirrorConfig.java: `{script_map.get(host, '❌ не найдено')}`")
         lines.append(f"- ожидаемое зеркало:     `{expected}`")
         lines.append(f"- актуальная DoH-цепочка *aws → `{cname}` ({len(ips)} IP)")
 
         if script_map.get(host) != expected:
-            lines.append("- ⚠️ mirrorMap юзерскрипта не совпадает с EXPECTED — синхронизируй файлы")
+            lines.append("- ⚠️ MirrorConfig.java не совпадает с EXPECTED — синхронизируй")
             problems += 1
         if cname.endswith(".cloudfront.net") and cname != expected:
             lines.append(f"- 🔴 Roblox СМЕНИЛ дистрибуцию: замени `{expected}` → `{cname}`")

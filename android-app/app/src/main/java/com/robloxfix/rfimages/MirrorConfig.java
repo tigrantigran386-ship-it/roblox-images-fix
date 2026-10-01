@@ -147,9 +147,24 @@ public final class MirrorConfig {
     private static final String FALLBACK_IMAGE_PATH =
             "/180DAY-f6cc8a94434eb8708aaab2f7732bac01/420/420/Image/Png/noFilter";
 
+    /** Базовая (здоровая) проба чемпиона: EWMA по здоровым замерам. */
+    private static volatile int BASELINE = -1;
+
     /** Журнал событий: переживает тумблер, хвост показываем в отчёте. */
     private static volatile java.io.File JOURNAL_FILE;
     private static volatile long SESSION_START;
+
+    /** «Боковые двери» (sc0ak, sc0gcp, ...): хост → истинные IP через DoH (не отравить). */
+    private static final Map<String, List<byte[]>> DIRECT_IPS = new ConcurrentHashMap<>();
+    private static final java.util.Set<String> DIRECT_TRIED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** Порог «канал деградировал»: 700 мс абсолютно, или в 2.2 раза хуже здоровой базы. */
+    private static int degradedThreshold() {
+        int t = 700;
+        if (BASELINE > 0) t = Math.max(t, BASELINE * 220 / 100);
+        return Math.min(t, 2500);
+    }
     private static final java.util.Set<String> DISCOVERY_TRIED =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
@@ -190,35 +205,59 @@ public final class MirrorConfig {
                     int champProbe = probeThroughput(ips.get(0));
                     probeChamp = champProbe;
 
-                    if (champProbe < 2500) {
+                    if (champProbe < degradedThreshold()) {
+                        BASELINE = BASELINE < 0 ? champProbe : (BASELINE * 7 + champProbe) / 8;
                         if (BAD_STREAK.get() >= 2) jrnl("канал tr восстановился: " + champProbe + " мс");
                         BAD_STREAK.set(0);
                         LAST_RTT_MS = champProbe;
-                        continue;                  // канал здоров (300КБ быстрее 2.5с)
+                        continue;                  // канал здоров
                     }
                     jrnl("проба tr: " + (champProbe == Integer.MAX_VALUE ? "нет ответа" : champProbe + " мс")
-                            + " — деградация");
+                            + " — деградация (порог " + degradedThreshold() + " мс)");
 
                     // 2) подтверждение: одно сетевое дрожание — не повод переезжать
                     int streak = BAD_STREAK.incrementAndGet();
                     if (streak < 2) continue;
 
-                    // 3) канал плохой 2 минуты подряд — меряем кандидатов: CF + Akamai (+зашитые)
+                    // 3) канал плохой 2 минуты подряд — меряем кандидатов ПАРАЛЛЕЛЬНО:
+                    //    сначала Akamai (зашитые), потом CF — чтобы CF-пул не выдавил Akamai
                     List<byte[]> fresh = DnsKit.resolveA4Merged("tr.rbxcdn.com");
                     List<byte[]> cands = new ArrayList<>();
-                    if (fresh != null) for (byte[] ip : fresh) if (!containsIp(cands, ip) && cands.size() < 6) cands.add(ip);
-                    for (byte[] ip : ips) if (!containsIp(cands, ip) && cands.size() < 6) cands.add(ip);
                     for (String a : AKAMAI_TR_STATIC) {
                         byte[] ab = parseDotted(a);
-                        if (ab != null && !containsIp(cands, ab) && cands.size() < 8) cands.add(ab);
+                        if (ab != null && !containsIp(cands, ab) && cands.size() < 5) cands.add(ab);
                     }
+                    if (fresh != null) for (byte[] ip : fresh) if (!containsIp(cands, ip) && cands.size() < 6) cands.add(ip);
+                    for (byte[] ip : ips) if (!containsIp(cands, ip) && cands.size() < 6) cands.add(ip);
+                    List<byte[]> trak = DnsKit.resolveA4Merged("trak.rbxcdn.com");
+                    if (trak != null) for (byte[] ip : trak) {
+                        AKAMAI_TR.add(dotted(ip));
+                        if (!containsIp(cands, ip) && cands.size() < 8) cands.add(ip);
+                    }
+
+                    final java.util.Map<String, Integer> wsc = new java.util.concurrent.ConcurrentHashMap<>();
+                    List<Thread> wj = new ArrayList<>();
+                    for (byte[] ip : cands) {
+                        if (Arrays.equals(ip, ips.get(0))) continue;
+                        Thread t2 = new Thread(() -> wsc.put(dotted(ip), probeThroughput(ip)), "rbxfix-wprobe");
+                        wj.add(t2); t2.start();
+                    }
+                    for (Thread t2 : wj) { try { t2.join(9000); } catch (InterruptedException ignored) { } }
 
                     int bestProbe = Integer.MAX_VALUE;
                     byte[] bestIp = null;
-                    for (byte[] ip : cands) {
-                        if (Arrays.equals(ip, ips.get(0))) continue;
-                        int pr = probeThroughput(ip);
-                        if (pr < bestProbe) { bestProbe = pr; bestIp = ip; }
+                    for (Map.Entry<String, Integer> en : wsc.entrySet()) {
+                        if (en.getValue() < bestProbe) { bestProbe = en.getValue(); bestIp = parseDotted(en.getKey()); }
+                    }
+                    // при почти равной силе — Akamai: уход из душимого CF-диапазона
+                    if (bestIp != null && !AKAMAI_TR.contains(dotted(bestIp))) {
+                        for (Map.Entry<String, Integer> en : wsc.entrySet()) {
+                            if (AKAMAI_TR.contains(en.getKey()) && en.getValue() < Integer.MAX_VALUE
+                                    && en.getValue() <= bestProbe * 110 / 100) {
+                                bestProbe = en.getValue(); bestIp = parseDotted(en.getKey());
+                                break;
+                            }
+                        }
                     }
 
                     boolean swap = false;
@@ -274,17 +313,18 @@ public final class MirrorConfig {
                     if (ips == null || ips.isEmpty()) return;
 
                     if (isTr) {
-                        // собираем полный пул: CloudFront + Akamai-нога
-                        List<byte[]> all = new ArrayList<>(ips);
+                        // Урок vc9: пул CF (до 10 IP) заполнял лимит, а на пробу брали
+                        // первые 6 → Akamai МАТЕМАТИЧЕСКИ не участвовал в гонке,
+                        // «канал: CF» в каждом отчёте. Теперь CF ≤4 слота, Akamai — всегда.
+                        List<byte[]> all = new ArrayList<>(ips.size() > 4 ? ips.subList(0, 4) : ips);
                         for (String akHost : new String[]{"trak.rbxcdn.com", "tr.rbxcdn.com.edgesuite.net"}) {
                             List<byte[]> aka = DnsKit.resolveA4Merged(akHost);
                             if (aka == null) continue;
                             for (byte[] ip : aka) {
-                                String dotted = (ip[0] & 0xFF) + "." + (ip[1] & 0xFF) + "." + (ip[2] & 0xFF) + "." + (ip[3] & 0xFF);
-                                AKAMAI_TR.add(dotted);
+                                AKAMAI_TR.add(dotted(ip));
                                 boolean dup = false;
                                 for (byte[] have : all) if (Arrays.equals(have, ip)) { dup = true; break; }
-                                if (!dup && all.size() < 10) all.add(ip);
+                                if (!dup && all.size() < 8) all.add(ip);
                             }
                         }
                         for (String a : AKAMAI_TR_STATIC) {   // зашитые: резолв trak может быть отравлен
@@ -293,10 +333,10 @@ public final class MirrorConfig {
                             AKAMAI_TR.add(a);
                             boolean dup = false;
                             for (byte[] have : all) if (Arrays.equals(have, ab)) { dup = true; break; }
-                            if (!dup && all.size() < 10) all.add(ab);
+                            if (!dup && all.size() < 8) all.add(ab);
                         }
-                        // ранжируем ПРОБОЙ РЕАЛЬНОЙ ЗАГРУЗКИ (максимум 6 проб)
-                        List<byte[]> probeList = all.size() > 6 ? new ArrayList<>(all.subList(0, 6)) : new ArrayList<>(all);
+                        // ранжируем ПРОБОЙ РЕАЛЬНОЙ ЗАГРУЗКИ (все кандидаты, ≤8)
+                        List<byte[]> probeList = all;
                         final Map<String, Integer> scores = new ConcurrentHashMap<>();
                         List<Thread> pj = new ArrayList<>();
                         for (byte[] ip : probeList) {
@@ -318,6 +358,17 @@ public final class MirrorConfig {
                         results.put(e.getKey(), stableMerge(e.getKey(), sortByRtt(ips)));
                     }
                 }, "rbxfix-refresh-" + e.getKey());
+                jobs.add(j);
+                j.start();
+            }
+            for (final String h : DIRECT_IPS.keySet()) {   // боковые двери: свежие истинные IP
+                Thread j = new Thread(() -> {
+                    List<byte[]> ips2 = DnsKit.resolveA4Merged(h);
+                    if (ips2 != null && !ips2.isEmpty()) {
+                        List<byte[]> cap = ips2.size() > 6 ? new ArrayList<>(ips2.subList(0, 6)) : new ArrayList<>(ips2);
+                        DIRECT_IPS.put(h, cap);
+                    }
+                }, "rbxfix-refresh-direct-" + h);
                 jobs.add(j);
                 j.start();
             }
@@ -392,7 +443,7 @@ public final class MirrorConfig {
             if (DnsKit.protector != null) DnsKit.protector.protectSocket(s);
             String imgPath = getImagePath();   // вне секундомера: API/кэш не портят замер
             long t0 = System.currentTimeMillis();
-            s.connect(new java.net.InetSocketAddress(java.net.InetAddress.getByAddress(ip), 443), 2000);
+            s.connect(new java.net.InetSocketAddress(java.net.InetAddress.getByAddress(ip), 443), 3000);
             s.startHandshake();
             java.io.OutputStream os = s.getOutputStream();
             os.write(("GET " + imgPath + " HTTP/1.1\r\nHost: tr.rbxcdn.com\r\n"
@@ -560,7 +611,7 @@ public final class MirrorConfig {
             String champD = dotted(old.get(0));
             Integer champScore = scores.get(champD);
             if (champScore == null && containsIp(ranked, old.get(0))) champScore = probeThroughput(old.get(0));
-            if (champScore != null && champScore < 2500) {
+            if (champScore != null && champScore < degradedThreshold()) {
                 // чемпион здоров — оставляем ЛЮБОЙ ценой (стабильность решает всё)
                 List<byte[]> out = new ArrayList<>();
                 out.add(old.get(0));
@@ -676,7 +727,8 @@ public final class MirrorConfig {
     /** Переписывать ли этот запрос (только A/AAAA по известным хостам). */
     public static boolean shouldRewrite(String qname, int qtype) {
         if (qtype != DnsKit.TYPE_A && qtype != DnsKit.TYPE_AAAA) return false;
-        return HOST_TO_MIRROR.containsKey(qname) || DYNAMIC.containsKey(qname);
+        return HOST_TO_MIRROR.containsKey(qname) || DYNAMIC.containsKey(qname)
+                || DIRECT_IPS.containsKey(qname) || qname.endsWith(".rbxcdn.com");
     }
 
     /**
@@ -714,9 +766,37 @@ public final class MirrorConfig {
     public static byte[] answer(DnsKit.Query q) {
         if (q.qtype == DnsKit.TYPE_A) {
             List<byte[]> ips = MIRROR_IPS.get(q.qname);
-            return DnsKit.buildAAnswers(q, ips);
+            if (ips == null) {
+                ips = DIRECT_IPS.get(q.qname);
+                if (ips == null && q.qname.endsWith(".rbxcdn.com")) ips = discoverDirect(q.qname);
+            }
+            if (ips != null) return DnsKit.buildAAnswers(q, ips);
         }
         return DnsKit.buildEmptyAnswer(q); // AAAA → пусто, клиент пойдёт по IPv4
+    }
+
+    /**
+     * «Боковые двери»: Roblox начал раздавать часть ассетов через sc0ak/sc0gcp и т.п. —
+     * этих хостов нет в карте, раньше они уходили на DNS оператора (отравлено → ассеты
+     * не грузятся даже при идеальном tr). Узнаём истинные IP через merged-резолвер
+     * (DoH неотравляем) и кэшируем; обновляется в refreshAsync.
+     */
+    private static List<byte[]> discoverDirect(String host) {
+        List<byte[]> have = DIRECT_IPS.get(host);
+        if (have != null) return have;
+        if (!DIRECT_TRIED.add(host)) return DIRECT_IPS.get(host);   // уже копает другой поток
+        try {
+            List<byte[]> ips = DnsKit.resolveA4Merged(host);
+            if (ips == null || ips.isEmpty()) ips = DnsKit.resolveA4(host);
+            if (ips != null && !ips.isEmpty()) {
+                List<byte[]> cap = ips.size() > 6 ? new ArrayList<>(ips.subList(0, 6)) : new ArrayList<>(ips);
+                DIRECT_IPS.put(host, cap);
+                jrnl("новый rbxcdn-хост: " + host.split("\\.")[0] + " → прямой CDN (" + cap.size() + " IP)");
+                return cap;
+            }
+        } catch (Throwable ignored) { }
+        DIRECT_TRIED.remove(host);   // не вышло — попробуем при следующем запросе
+        return null;
     }
 
     /** Текущие IP зеркала хоста (для проверки из UI). */

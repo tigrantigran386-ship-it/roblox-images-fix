@@ -170,16 +170,48 @@ public final class MirrorConfig {
                     Thread.sleep(60_000);
                     List<byte[]> ips = MIRROR_IPS.get("tr.rbxcdn.com");
                     if (ips == null || ips.isEmpty()) continue;
-                    int r = rttMs(ips.get(0));
-                    if (r < 250) {
+
+                    // 1) проба доставки чемпиона
+                    int champProbe = probeTtfb(ips.get(0));
+                    probeChamp = champProbe;
+
+                    if (champProbe < 350) {
                         BAD_STREAK.set(0);
-                        LAST_RTT_MS = r;
-                        continue;
+                        LAST_RTT_MS = champProbe;
+                        continue;                  // канал здоров
                     }
-                    if (BAD_STREAK.incrementAndGet() >= 2) {
+
+                    // 2) канал плохой — ищем кандидата с РЕАЛЬНО лучшей доставкой
+                    List<byte[]> fresh = DnsKit.resolveA4Merged("tr.rbxcdn.com");
+                    int bestProbe = Integer.MAX_VALUE;
+                    byte[] bestIp = null;
+                    if (fresh != null) {
+                        for (byte[] ip : fresh) {
+                            if (containsIp(ips, ip)) continue;   // кроме текущего чемпиона
+                            int pr = probeTtfb(ip);
+                            if (pr < bestProbe) { bestProbe = pr; bestIp = ip; }
+                        }
+                    }
+                    probeAlt = bestProbe;
+
+                    boolean swap = false;
+                    if (champProbe == Integer.MAX_VALUE && bestIp != null) {
+                        swap = true;                                 // чемпион мёртв по доставке
+                    } else if (bestIp != null && bestProbe * 10 < champProbe * 6) {
+                        swap = true;                                 // кандидат быстрее в 1.6+ раза
+                    }
+
+                    if (swap && bestIp != null) {
+                        List<byte[]> next = new ArrayList<>();
+                        next.add(bestIp);
+                        for (byte[] ip : ips) if (!containsIp(next, ip)) next.add(ip);
+                        MIRROR_IPS.put("tr.rbxcdn.com", next);
+                        champChanges++;
+                        probeChamp = bestProbe;
+                    } else if (BAD_STREAK.incrementAndGet() >= 2) {
                         BAD_STREAK.set(0);
-                        LAST_REFRESH.set(0);       // снять троттлинг
-                        refreshAsync();            // внеплановое обновление СЕЙЧАС
+                        LAST_REFRESH.set(0);
+                        refreshAsync();            // все эджи плохи — обновим пул целиком
                     }
                 } catch (InterruptedException e) {
                     return;
@@ -204,7 +236,8 @@ public final class MirrorConfig {
             List<Thread> jobs = new ArrayList<>();
             for (Map.Entry<String, String> e : HOST_TO_MIRROR.entrySet()) {
                 Thread j = new Thread(() -> {
-                    List<byte[]> ips = DnsKit.resolveA4(e.getValue());
+                    List<byte[]> ips = DnsKit.resolveA4Merged(e.getValue());
+                    if (ips == null || ips.isEmpty()) ips = DnsKit.resolveA4(e.getValue());
                     if (ips != null && !ips.isEmpty()) {
                         results.put(e.getKey(), stableMerge(e.getKey(), sortByRtt(ips)));
                     }
@@ -226,6 +259,42 @@ public final class MirrorConfig {
 
     /** Сколько раз менялся чемпион ГЛАВНОГО хоста tr (для отчёта). */
     public static volatile int champChanges;
+
+    /** Последние результаты пробы доставки: [чемпион, лучший кандидат], мс. */
+    public static volatile int probeChamp = -1, probeAlt = -1;
+
+    /**
+     * ПРОБА ДОСТАВКИ: TCP+TLS (SNI=tr.rbxcdn.com) + HTTP GET / до первого байта.
+     * Измеряет РЕАЛЬНУЮ скорость канала до эджа — то, чего не видит TCP-пинг
+     * (оператор может пропускать рукопожатия, но душить передачу).
+     */
+    private static int probeTtfb(byte[] ip) {
+        javax.net.ssl.SSLSocket s = null;
+        try {
+            s = (javax.net.ssl.SSLSocket) javax.net.ssl.SSLSocketFactory.getDefault().createSocket();
+            javax.net.ssl.SSLParameters sp = s.getSSLParameters();
+            sp.setServerNames(java.util.Collections.singletonList(
+                    new javax.net.ssl.SNIHostName("tr.rbxcdn.com")));
+            s.setSSLParameters(sp);
+            if (DnsKit.protector != null) DnsKit.protector.protectSocket(s);
+            long t0 = System.currentTimeMillis();
+            s.connect(java.net.InetAddress.getByAddress(ip) != null
+                    ? new java.net.InetSocketAddress(java.net.InetAddress.getByAddress(ip), 443)
+                    : null, 2000);
+            s.startHandshake();
+            java.io.OutputStream os = s.getOutputStream();
+            os.write("GET / HTTP/1.1\r\nHost: tr.rbxcdn.com\r\nUser-Agent: rbxfix-probe\r\nConnection: close\r\n\r\n"
+                    .getBytes("US-ASCII"));
+            os.flush();
+            java.io.InputStream is = s.getInputStream();
+            if (is.read() < 0) return Integer.MAX_VALUE;   // нет ответа
+            return (int) (System.currentTimeMillis() - t0);
+        } catch (Throwable t) {
+            return Integer.MAX_VALUE;
+        } finally {
+            try { if (s != null) s.close(); } catch (Exception ignored) { }
+        }
+    }
 
     /** Лучший из N TCP-замеров (одиночный пинг шумит). */
     private static int bestRtt(byte[] ip, int samples) {
@@ -328,7 +397,8 @@ public final class MirrorConfig {
         if (ips == null || ips.isEmpty()) return "нет IP";
         byte[] b = ips.get(0);
         String ipStr = (b[0] & 0xFF) + "." + (b[1] & 0xFF) + "." + (b[2] & 0xFF) + "." + (b[3] & 0xFF);
-        return ipStr + (LAST_RTT_MS < Integer.MAX_VALUE ? " (" + LAST_RTT_MS + " мс)" : "")
+        return ipStr
+                + (probeChamp > 0 ? ", проба доставки: " + probeChamp + " мс" : "")
                 + ", смен IP (tr): " + champChanges;
     }
 

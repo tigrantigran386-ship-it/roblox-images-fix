@@ -362,6 +362,36 @@ public final class DnsKit {
         }
     }
 
+    /**
+     * РАСШИРЕННЫЙ резолв: собирает A-записи из ВСЕХ источников
+     * (DNS оператора, DoH Cloudflare, DoH Google, UDP 1.1.1.1) и объединяет
+     * уникальные IP. CloudFront отдаёт разным резолверам разные наборы эджей —
+     * чем шире пул, тем выше шанс найти некрадущийся канал.
+     */
+    public static List<byte[]> resolveA4Merged(String host) {
+        List<byte[]> out = new ArrayList<>();
+        try {
+            byte[] q = buildQuery(host, TYPE_A);
+            List<byte[]> answers = new ArrayList<>();
+            try { answers.add(forwardPlain(q)); } catch (Exception ignored) { }
+            for (String url : DOH_URLS) {
+                try { answers.add(dohQuery(url, q)); } catch (Exception ignored) { }
+            }
+            try { answers.add(udpTo(q, new byte[]{1, 1, 1, 1}, 1500)); } catch (Exception ignored) { }
+            for (byte[] ans : answers) {
+                if (ans == null) continue;
+                List<byte[]> ips = parseARecords(ans);
+                if (ips == null) continue;
+                for (byte[] ip : ips) {
+                    boolean dup = false;
+                    for (byte[] have : out) if (Arrays.equals(have, ip)) { dup = true; break; }
+                    if (!dup && out.size() < 10) out.add(ip);
+                }
+            }
+        } catch (Exception ignored) { }
+        return out.isEmpty() ? null : out;
+    }
+
     /** Собирает бинарный DNS-запрос (RD=1, один вопрос). */
     public static byte[] buildQuery(String host, int type) throws IOException {
         ByteArrayOutputStream o = new ByteArrayOutputStream();

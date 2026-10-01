@@ -159,6 +159,58 @@ public final class MirrorConfig {
     private static final java.util.Set<String> DIRECT_TRIED =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
+    /** Последний контрольный замер обычной сети ВНЕ CDN (gstatic), мс. */
+    public static volatile int neutralProbe = -1;
+    private static volatile String neutralIp;
+    private static volatile long neutralIpAt;
+
+    /** Крошечный запрос к нейтральному хосту вне CDN: та же минута, та же сеть. */
+    private static int probeNeutral() {
+        javax.net.ssl.SSLSocket s = null;
+        try {
+            String ip = neutralIp;
+            long now = System.currentTimeMillis();
+            if (ip == null || now - neutralIpAt > 600_000) {
+                List<byte[]> l = DnsKit.resolveA4Merged("www.gstatic.com");
+                if (l == null || l.isEmpty()) l = DnsKit.resolveA4("www.gstatic.com");
+                if (l == null || l.isEmpty()) { neutralProbe = -1; return -1; }
+                ip = dotted(l.get(0));
+                neutralIp = ip;
+                neutralIpAt = now;
+            }
+            s = (javax.net.ssl.SSLSocket) javax.net.ssl.SSLSocketFactory.getDefault().createSocket();
+            javax.net.ssl.SSLParameters sp = s.getSSLParameters();
+            sp.setServerNames(java.util.Collections.singletonList(
+                    new javax.net.ssl.SNIHostName("www.gstatic.com")));
+            s.setSSLParameters(sp);
+            if (DnsKit.protector != null) DnsKit.protector.protectSocket(s);
+            long t0 = System.currentTimeMillis();
+            s.connect(new java.net.InetSocketAddress(java.net.InetAddress.getByAddress(parseDotted(ip)), 443), 3000);
+            s.startHandshake();
+            java.io.OutputStream os = s.getOutputStream();
+            os.write(("GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\n"
+                    + "User-Agent: rbxfix-probe\r\nConnection: close\r\n\r\n").getBytes("US-ASCII"));
+            os.flush();
+            int first = s.getInputStream().read();
+            int ms = (int) (System.currentTimeMillis() - t0);
+            neutralProbe = first < 0 ? Integer.MAX_VALUE : ms;
+            return neutralProbe;
+        } catch (Throwable t) {
+            neutralProbe = Integer.MAX_VALUE;
+            return neutralProbe;
+        } finally {
+            try { if (s != null) s.close(); } catch (Exception ignored) { }
+        }
+    }
+
+    /** Строка для отчёта по контролю сети. */
+    public static String neutralInfo() {
+        int v = neutralProbe;
+        if (v < 0) return "нет";
+        if (v == Integer.MAX_VALUE) return "нет ответа";
+        return v + " мс";
+    }
+
     /** Порог «канал деградировал»: 700 мс абсолютно, или в 2.2 раза хуже здоровой базы. */
     private static int degradedThreshold() {
         int t = 700;
@@ -197,27 +249,31 @@ public final class MirrorConfig {
         watchdog = new Thread(() -> {
             while (true) {
                 try {
-                    Thread.sleep(60_000);
+                    Thread.sleep(30_000);   // реакция за 0.5-1 мин вместо 1-2
                     List<byte[]> ips = MIRROR_IPS.get("tr.rbxcdn.com");
                     if (ips == null || ips.isEmpty()) continue;
 
-                    // 1) проба РЕАЛЬНОЙ загрузки у чемпиона (раз в минуту)
+                    // 1) проба РЕАЛЬНОЙ загрузки у чемпиона + контроль обычной сети
                     int champProbe = probeThroughput(ips.get(0));
                     probeChamp = champProbe;
+                    probeNeutral();
+                    boolean dead = champProbe == Integer.MAX_VALUE;
+                    String ctl = ", контроль сети " + neutralInfo();
 
-                    if (champProbe < degradedThreshold()) {
+                    if (!dead && champProbe < degradedThreshold()) {
                         BASELINE = BASELINE < 0 ? champProbe : (BASELINE * 7 + champProbe) / 8;
-                        if (BAD_STREAK.get() >= 2) jrnl("канал tr восстановился: " + champProbe + " мс");
+                        if (BAD_STREAK.get() >= 2) jrnl("канал tr восстановился: " + champProbe + " мс" + ctl);
                         BAD_STREAK.set(0);
                         LAST_RTT_MS = champProbe;
                         continue;                  // канал здоров
                     }
-                    jrnl("проба tr: " + (champProbe == Integer.MAX_VALUE ? "нет ответа" : champProbe + " мс")
-                            + " — деградация (порог " + degradedThreshold() + " мс)");
+                    jrnl("проба tr: " + (dead ? "нет ответа" : champProbe + " мс")
+                            + " — деградация (порог " + degradedThreshold() + " мс" + ctl + ")");
 
-                    // 2) подтверждение: одно сетевое дрожание — не повод переезжать
+                    // 2) Урок vc10: мёртвый канал чиним СРАЗУ (мёртв — однозначен),
+                    //    медленную деградацию подтверждаем второй пробой (30 с)
                     int streak = BAD_STREAK.incrementAndGet();
-                    if (streak < 2) continue;
+                    if (!dead && streak < 2) continue;
 
                     // 3) канал плохой 2 минуты подряд — меряем кандидатов ПАРАЛЛЕЛЬНО:
                     //    сначала Akamai (зашитые), потом CF — чтобы CF-пул не выдавил Akamai
@@ -261,9 +317,9 @@ public final class MirrorConfig {
                     }
 
                     boolean swap = false;
-                    if (champProbe == Integer.MAX_VALUE && bestIp != null) {
-                        swap = true;                                 // чемпион мёртв
-                    } else if (bestIp != null && bestProbe * 10 < champProbe * 6) {
+                    if (dead && bestProbe < Integer.MAX_VALUE) {
+                        swap = true;                                 // чемпион мёртв → любой живой
+                    } else if (!dead && bestIp != null && bestProbe * 10 < champProbe * 6) {
                         swap = true;                                 // кандидат быстрее в 1.6+ раза
                     }
 
@@ -278,11 +334,11 @@ public final class MirrorConfig {
                         BAD_STREAK.set(0);
                         jrnl("смена tr (watchdog): " + dotted(ips.get(0)) + " → " + dotted(bestIp)
                                 + " (" + champProbe + " → " + bestProbe + " мс)");
-                    } else if (streak >= 3) {
+                    } else if (streak >= 4) {
                         BAD_STREAK.set(0);
                         LAST_REFRESH.set(0);
-                        refreshAsync();            // все эджи плохи — обновим пул целиком
-                        jrnl("все эджи плохи — форс-обновление пула");
+                        refreshAsync(true);        // все эджи плохи — обновим пул целиком
+                        jrnl("все эджи плохи — форс-обновление пула (контроль сети " + neutralInfo() + ")");
                     }
                 } catch (InterruptedException e) {
                     return;
@@ -294,10 +350,18 @@ public final class MirrorConfig {
     }
 
     /** Асинхронно обновляет IP всех зеркал через DoH (троттлинг, watchdog умеет форсировать). */
-    public static void refreshAsync() {
+    public static void refreshAsync() { refreshAsync(false); }
+
+    /**
+     * Урок vc10: процесс приложения ПЕРЕЖИВАЕТ тумблер (статики живы), и 5-минутный
+     * предохранитель проглатывал обновление при повторном включении → Roblox получал
+     * мёртвого чемпиона из прошлого сеанса («вообще не грузило»). Явное включение
+     * пользователем = всегда свежая проба.
+     */
+    public static void refreshAsync(boolean force) {
         long now = System.currentTimeMillis();
         long prev = LAST_REFRESH.get();
-        if (now - prev < REFRESH_INTERVAL_MS) return;
+        if (!force && now - prev < REFRESH_INTERVAL_MS) return;
         if (!LAST_REFRESH.compareAndSet(prev, now)) return;
         startWatchdog();
 

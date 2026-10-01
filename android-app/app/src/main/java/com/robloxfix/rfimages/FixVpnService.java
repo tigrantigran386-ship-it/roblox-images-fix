@@ -147,7 +147,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         MirrorConfig.initJournal(getFilesDir());   // журнал переживает тумблер → видно плохое окно
         DnsKit.protector = this;          // наши DoH/UDP-сокеты не должны попадать в свой же туннель
         captureUpstreamDns();             // ДО установления туннеля: узнаём DNS оператора
-        MirrorConfig.refreshAsync();
+        MirrorConfig.refreshAsync(true);   // тумблер = всегда свежая проба (иначе мёртвый чемпион из прошлого сеанса)
     }
 
     /** Узнаём DNS-серверы текущей сети (то, что телефон использует без VPN). */

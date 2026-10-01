@@ -221,7 +221,7 @@ public final class DnsKit {
                     o.write(0xC0); o.write(12);            // имя — указатель на вопрос (офсет 12)
                     o.write(0); o.write(TYPE_A);           // type A
                     o.write(0); o.write(1);                // class IN
-                    o.write(0); o.write(0); o.write(1); o.write(44); // TTL 300 сек
+                    o.write(0); o.write(0); o.write(0); o.write(60); // TTL 60 сек — быстрая смена эджа
                     o.write(0); o.write(4);                // RDLENGTH
                     o.write(ip, 0, 4);
                 }

@@ -135,6 +135,10 @@ public final class MirrorConfig {
 
     /** Динамически найденные (автопоиском) зеркала: хост → cloudfront-имя. */
     private static final Map<String, String> DYNAMIC = new ConcurrentHashMap<>();
+
+    /** Akamai-кандидаты для tr (строки "a.b.c.d") — вторая нога CDN Roblox. */
+    private static final java.util.Set<String> AKAMAI_TR =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static final java.util.Set<String> DISCOVERY_TRIED =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
@@ -171,32 +175,33 @@ public final class MirrorConfig {
                     List<byte[]> ips = MIRROR_IPS.get("tr.rbxcdn.com");
                     if (ips == null || ips.isEmpty()) continue;
 
-                    // 1) проба доставки чемпиона
-                    int champProbe = probeTtfb(ips.get(0));
+                    // 1) проба РЕАЛЬНОЙ загрузки у чемпиона
+                    int champProbe = probeThroughput(ips.get(0));
                     probeChamp = champProbe;
 
-                    if (champProbe < 350) {
+                    if (champProbe < 2500) {
                         BAD_STREAK.set(0);
                         LAST_RTT_MS = champProbe;
-                        continue;                  // канал здоров
+                        continue;                  // канал здоров (300КБ быстрее 2.5с)
                     }
 
-                    // 2) канал плохой — ищем кандидата с РЕАЛЬНО лучшей доставкой
+                    // 2) канал плохой — меряем кандидатов: свежий CF + Akamai-нога
                     List<byte[]> fresh = DnsKit.resolveA4Merged("tr.rbxcdn.com");
+                    List<byte[]> cands = new ArrayList<>();
+                    if (fresh != null) for (byte[] ip : fresh) if (!containsIp(cands, ip) && cands.size() < 6) cands.add(ip);
+                    for (byte[] ip : ips) if (!containsIp(cands, ip) && cands.size() < 6) cands.add(ip);
+
                     int bestProbe = Integer.MAX_VALUE;
                     byte[] bestIp = null;
-                    if (fresh != null) {
-                        for (byte[] ip : fresh) {
-                            if (containsIp(ips, ip)) continue;   // кроме текущего чемпиона
-                            int pr = probeTtfb(ip);
-                            if (pr < bestProbe) { bestProbe = pr; bestIp = ip; }
-                        }
+                    for (byte[] ip : cands) {
+                        if (Arrays.equals(ip, ips.get(0))) continue;
+                        int pr = probeThroughput(ip);
+                        if (pr < bestProbe) { bestProbe = pr; bestIp = ip; }
                     }
-                    probeAlt = bestProbe;
 
                     boolean swap = false;
                     if (champProbe == Integer.MAX_VALUE && bestIp != null) {
-                        swap = true;                                 // чемпион мёртв по доставке
+                        swap = true;                                 // чемпион мёртв
                     } else if (bestIp != null && bestProbe * 10 < champProbe * 6) {
                         swap = true;                                 // кандидат быстрее в 1.6+ раза
                     }
@@ -207,6 +212,7 @@ public final class MirrorConfig {
                         for (byte[] ip : ips) if (!containsIp(next, ip)) next.add(ip);
                         MIRROR_IPS.put("tr.rbxcdn.com", next);
                         champChanges++;
+                        champType = AKAMAI_TR.contains(dotted(bestIp)) ? "Akamai" : "CF";
                         probeChamp = bestProbe;
                     } else if (BAD_STREAK.incrementAndGet() >= 2) {
                         BAD_STREAK.set(0);
@@ -235,10 +241,46 @@ public final class MirrorConfig {
             Map<String, List<byte[]>> results = new ConcurrentHashMap<>();
             List<Thread> jobs = new ArrayList<>();
             for (Map.Entry<String, String> e : HOST_TO_MIRROR.entrySet()) {
+                final boolean isTr = "tr.rbxcdn.com".equals(e.getKey());
                 Thread j = new Thread(() -> {
                     List<byte[]> ips = DnsKit.resolveA4Merged(e.getValue());
                     if (ips == null || ips.isEmpty()) ips = DnsKit.resolveA4(e.getValue());
-                    if (ips != null && !ips.isEmpty()) {
+                    if (ips == null || ips.isEmpty()) return;
+
+                    if (isTr) {
+                        // собираем полный пул: CloudFront + Akamai-нога
+                        List<byte[]> all = new ArrayList<>(ips);
+                        for (String akHost : new String[]{"trak.rbxcdn.com", "tr.rbxcdn.com.edgesuite.net"}) {
+                            List<byte[]> aka = DnsKit.resolveA4Merged(akHost);
+                            if (aka == null) continue;
+                            for (byte[] ip : aka) {
+                                String dotted = (ip[0] & 0xFF) + "." + (ip[1] & 0xFF) + "." + (ip[2] & 0xFF) + "." + (ip[3] & 0xFF);
+                                AKAMAI_TR.add(dotted);
+                                boolean dup = false;
+                                for (byte[] have : all) if (Arrays.equals(have, ip)) { dup = true; break; }
+                                if (!dup && all.size() < 10) all.add(ip);
+                            }
+                        }
+                        // ранжируем ПРОБОЙ РЕАЛЬНОЙ ЗАГРУЗКИ (максимум 6 проб)
+                        List<byte[]> probeList = all.size() > 6 ? new ArrayList<>(all.subList(0, 6)) : new ArrayList<>(all);
+                        final Map<String, Integer> scores = new ConcurrentHashMap<>();
+                        List<Thread> pj = new ArrayList<>();
+                        for (byte[] ip : probeList) {
+                            Thread t2 = new Thread(() -> {
+                                String d = (ip[0] & 0xFF) + "." + (ip[1] & 0xFF) + "." + (ip[2] & 0xFF) + "." + (ip[3] & 0xFF);
+                                scores.put(d, probeThroughput(ip));
+                            }, "rbxfix-probe");
+                            pj.add(t2); t2.start();
+                        }
+                        for (Thread t2 : pj) { try { t2.join(7000); } catch (InterruptedException ignored) { } }
+                        probeList.sort((a, b) -> {
+                            String da = (a[0]&0xFF) + "." + (a[1]&0xFF) + "." + (a[2]&0xFF) + "." + (a[3]&0xFF);
+                            String db = (b[0]&0xFF) + "." + (b[1]&0xFF) + "." + (b[2]&0xFF) + "." + (b[3]&0xFF);
+                            return Integer.compare(scores.getOrDefault(da, Integer.MAX_VALUE),
+                                                   scores.getOrDefault(db, Integer.MAX_VALUE));
+                        });
+                        results.put(e.getKey(), pickTrStable(probeList, scores));
+                    } else {
                         results.put(e.getKey(), stableMerge(e.getKey(), sortByRtt(ips)));
                     }
                 }, "rbxfix-refresh-" + e.getKey());
@@ -260,8 +302,84 @@ public final class MirrorConfig {
     /** Сколько раз менялся чемпион ГЛАВНОГО хоста tr (для отчёта). */
     public static volatile int champChanges;
 
-    /** Последние результаты пробы доставки: [чемпион, лучший кандидат], мс. */
-    public static volatile int probeChamp = -1, probeAlt = -1;
+    /** Последний результат пробы доставки чемпиона, мс (реальная загрузка). */
+    public static volatile int probeChamp = -1;
+
+    /** Тип канала чемпиона: "CF" (CloudFront) или "Akamai". */
+    public static volatile String champType = "CF";
+
+    /** Кэш пути тестовой картинки (из thumbnails API, 10 минут). */
+    private static volatile String cachedImagePath;
+    private static volatile long imagePathAt;
+
+    private static String getImagePath() {
+        long now = System.currentTimeMillis();
+        if (cachedImagePath != null && now - imagePathAt < 600_000) return cachedImagePath;
+        try {
+            javax.net.ssl.HttpsURLConnection c = (javax.net.ssl.HttpsURLConnection)
+                    new java.net.URL("https://thumbnails.roblox.com/v1/places/gameicons?placeIds=920587237&size=420x420&format=Png")
+                            .openConnection();
+            c.setSSLSocketFactory(ProtectedSSLSocketFactory.get());
+            c.setConnectTimeout(4000);
+            c.setReadTimeout(4000);
+            java.io.InputStream in = c.getInputStream();
+            java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream();
+            byte[] b = new byte[4096];
+            int n;
+            while ((n = in.read(b)) > 0) o.write(b, 0, n);
+            in.close();
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                    "\"imageUrl\":\"([^\"]+)\"").matcher(o.toString("UTF-8"));
+            if (m.find()) {
+                String u = m.group(1);
+                int slash = u.indexOf(".com");
+                if (slash > 0) {
+                    cachedImagePath = u.substring(slash + 4);
+                    imagePathAt = now;
+                }
+            }
+        } catch (Throwable ignored) { }
+        return cachedImagePath != null ? cachedImagePath : "/";
+    }
+
+    /**
+     * ПРОБА РЕАЛЬНОЙ ЗАГРУЗКИ: TCP + TLS (SNI tr.rbxcdn.com) + GET настоящей
+     * картинки + чтение до ~300 КБ (или EOF). Показывает то, что чувствует
+     * Roblox: даже если рукопожатия быстрые, а передача душится — это видно.
+     */
+    private static int probeThroughput(byte[] ip) {
+        javax.net.ssl.SSLSocket s = null;
+        try {
+            s = (javax.net.ssl.SSLSocket) javax.net.ssl.SSLSocketFactory.getDefault().createSocket();
+            javax.net.ssl.SSLParameters sp = s.getSSLParameters();
+            sp.setServerNames(java.util.Collections.singletonList(
+                    new javax.net.ssl.SNIHostName("tr.rbxcdn.com")));
+            s.setSSLParameters(sp);
+            if (DnsKit.protector != null) DnsKit.protector.protectSocket(s);
+            long t0 = System.currentTimeMillis();
+            s.connect(new java.net.InetSocketAddress(java.net.InetAddress.getByAddress(ip), 443), 2000);
+            s.startHandshake();
+            java.io.OutputStream os = s.getOutputStream();
+            os.write(("GET " + getImagePath() + " HTTP/1.1\r\nHost: tr.rbxcdn.com\r\n"
+                    + "User-Agent: rbxfix-probe\r\nConnection: close\r\n\r\n").getBytes("US-ASCII"));
+            os.flush();
+            java.io.InputStream is = s.getInputStream();
+            if (is.read() < 0) return Integer.MAX_VALUE;
+            long deadline = t0 + 4000;
+            byte[] buf = new byte[16384];
+            int total = 1;
+            while (total < 300_000 && System.currentTimeMillis() < deadline) {
+                int n = is.read(buf);
+                if (n < 0) break;
+                total += n;
+            }
+            return (int) (System.currentTimeMillis() - t0);
+        } catch (Throwable t) {
+            return Integer.MAX_VALUE;
+        } finally {
+            try { if (s != null) s.close(); } catch (Exception ignored) { }
+        }
+    }
 
     /**
      * ПРОБА ДОСТАВКИ: TCP+TLS (SNI=tr.rbxcdn.com) + HTTP GET / до первого байта.
@@ -361,7 +479,7 @@ public final class MirrorConfig {
         return result;
     }
 
-    /** TCP-подключение на 443 — меряем реальную задержку до эджа. */
+    /** TCP-подключение на 443 — быстрая оценка задержки (для сортировки). */
     private static int rttMs(byte[] ip) {
         java.net.Socket s = new java.net.Socket();
         try {
@@ -391,14 +509,51 @@ public final class MirrorConfig {
         }
     }
 
+    /**
+     * Выбор чемпиона tr по результатам пробы загрузки, со стабильностью:
+     * текущий чемпион остаётся, если он здоров (<2500 мс) и не хуже лучшего на 25%.
+     */
+    private static List<byte[]> pickTrStable(List<byte[]> ranked, Map<String, Integer> scores) {
+        if (ranked == null || ranked.isEmpty()) return ranked;
+        List<byte[]> old = MIRROR_IPS.get("tr.rbxcdn.com");
+        String bestD = dotted(ranked.get(0));
+        int bestScore = scores.getOrDefault(bestD, Integer.MAX_VALUE);
+
+        if (old != null && !old.isEmpty()) {
+            String champD = dotted(old.get(0));
+            Integer champScore = scores.get(champD);
+            if (champScore == null && containsIp(ranked, old.get(0))) champScore = probeThroughput(old.get(0));
+            if (champScore != null && champScore < 2500 && champScore <= bestScore * 125 / 100) {
+                // чемпион здоров и сопоставим — оставляем (стабильность важнее ±10%)
+                List<byte[]> out = new ArrayList<>();
+                out.add(old.get(0));
+                for (byte[] ip : ranked) if (!containsIp(out, ip) && out.size() < 6) out.add(ip);
+                probeChamp = champScore;
+                champType = AKAMAI_TR.contains(champD) ? "Akamai" : "CF";
+                return out;
+            }
+            if (champScore == null || champScore >= 2500) champChanges++;   // чемпион плохой — переезд
+        }
+        probeChamp = bestScore;
+        champType = AKAMAI_TR.contains(bestD) ? "Akamai" : "CF";
+        List<byte[]> out = new ArrayList<>();
+        for (byte[] ip : ranked) if (out.size() < 6) out.add(ip);
+        if (old != null) for (byte[] ip : old) if (!containsIp(out, ip) && out.size() < 6) out.add(ip);
+        return out;
+    }
+
+    private static String dotted(byte[] ip) {
+        return (ip[0] & 0xFF) + "." + (ip[1] & 0xFF) + "." + (ip[2] & 0xFF) + "." + (ip[3] & 0xFF);
+    }
+
     /** Строка для отчёта: лучший IP зеркала и его задержка. */
     public static String bestMirrorInfo() {
         List<byte[]> ips = MIRROR_IPS.get("tr.rbxcdn.com");
         if (ips == null || ips.isEmpty()) return "нет IP";
         byte[] b = ips.get(0);
         String ipStr = (b[0] & 0xFF) + "." + (b[1] & 0xFF) + "." + (b[2] & 0xFF) + "." + (b[3] & 0xFF);
-        return ipStr
-                + (probeChamp > 0 ? ", проба доставки: " + probeChamp + " мс" : "")
+        return ipStr + ", канал: " + champType
+                + (probeChamp > 0 ? ", проба (реальная загрузка): " + probeChamp + " мс" : "")
                 + ", смен IP (tr): " + champChanges;
     }
 

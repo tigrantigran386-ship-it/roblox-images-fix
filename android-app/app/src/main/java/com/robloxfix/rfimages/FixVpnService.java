@@ -96,6 +96,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                     + "per-app: " + perApp + "\n"
                     + "зеркало картинок: " + com.robloxfix.rfimages.MirrorConfig.bestMirrorInfo() + "\n"
                     + "контроль сети (вне CDN): " + com.robloxfix.rfimages.MirrorConfig.neutralInfo() + "\n"
+                    + "IPv6-путь: " + com.robloxfix.rfimages.MirrorConfig.v6Info() + "\n"
                     + "пакетов из TUN: " + packets + "\n"
                     + "DNS-запросов: " + dnsQueries + "\n"
                     + "переписано (rbxcdn): " + rewritten

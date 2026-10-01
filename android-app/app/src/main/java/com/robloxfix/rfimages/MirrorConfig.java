@@ -159,7 +159,16 @@ public final class MirrorConfig {
     private static final java.util.Set<String> DIRECT_TRIED =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-    /** Последний контрольный замер обычной сети ВНЕ CDN (gstatic), мс. */
+    /** IPv6-путь включён (доказанно быстрее в плохие окна)? */
+    public static volatile boolean AAA6_MODE = false;
+    private static final Map<String, List<byte[]>> AAA6_CACHE = new ConcurrentHashMap<>();
+    private static final java.util.Set<String> V6_TRIED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** Последняя проба IPv6-пути, мс (-1 — не проверялся). */
+    public static volatile int v6ProbeMs = -1;
+    private static int WDOG_CYCLE;
+
+    /** Последний контрольный замер обычной сети ВНЕ CDN (чистый РФ-эталон ya.ru), мс. */
     public static volatile int neutralProbe = -1;
     private static volatile String neutralIp;
     private static volatile long neutralIpAt;
@@ -171,8 +180,8 @@ public final class MirrorConfig {
             String ip = neutralIp;
             long now = System.currentTimeMillis();
             if (ip == null || now - neutralIpAt > 600_000) {
-                List<byte[]> l = DnsKit.resolveA4Merged("www.gstatic.com");
-                if (l == null || l.isEmpty()) l = DnsKit.resolveA4("www.gstatic.com");
+                List<byte[]> l = DnsKit.resolveA4Merged("ya.ru");
+                if (l == null || l.isEmpty()) l = DnsKit.resolveA4("ya.ru");
                 if (l == null || l.isEmpty()) { neutralProbe = -1; return -1; }
                 ip = dotted(l.get(0));
                 neutralIp = ip;
@@ -181,14 +190,14 @@ public final class MirrorConfig {
             s = (javax.net.ssl.SSLSocket) javax.net.ssl.SSLSocketFactory.getDefault().createSocket();
             javax.net.ssl.SSLParameters sp = s.getSSLParameters();
             sp.setServerNames(java.util.Collections.singletonList(
-                    new javax.net.ssl.SNIHostName("www.gstatic.com")));
+                    new javax.net.ssl.SNIHostName("ya.ru")));
             s.setSSLParameters(sp);
             if (DnsKit.protector != null) DnsKit.protector.protectSocket(s);
             long t0 = System.currentTimeMillis();
             s.connect(new java.net.InetSocketAddress(java.net.InetAddress.getByAddress(parseDotted(ip)), 443), 3000);
             s.startHandshake();
             java.io.OutputStream os = s.getOutputStream();
-            os.write(("GET /generate_204 HTTP/1.1\r\nHost: www.gstatic.com\r\n"
+            os.write(("GET / HTTP/1.1\r\nHost: ya.ru\r\n"
                     + "User-Agent: rbxfix-probe\r\nConnection: close\r\n\r\n").getBytes("US-ASCII"));
             os.flush();
             int first = s.getInputStream().read();
@@ -201,6 +210,14 @@ public final class MirrorConfig {
         } finally {
             try { if (s != null) s.close(); } catch (Exception ignored) { }
         }
+    }
+
+    /** Строка для отчёта по IPv6-пути. */
+    public static String v6Info() {
+        if (AAA6_MODE) return "вкл (" + (v6ProbeMs > 0 ? v6ProbeMs + " мс" : "жив") + ")";
+        if (v6ProbeMs == -1) return "не проверялся";
+        if (v6ProbeMs == -2) return "нет ответа";
+        return "выкл (" + v6ProbeMs + " мс)";
     }
 
     /** Строка для отчёта по контролю сети. */
@@ -265,6 +282,14 @@ public final class MirrorConfig {
                         if (BAD_STREAK.get() >= 2) jrnl("канал tr восстановился: " + champProbe + " мс" + ctl);
                         BAD_STREAK.set(0);
                         LAST_RTT_MS = champProbe;
+                        if (AAA6_MODE && (++WDOG_CYCLE % 10 == 0)) {   // v6 ещё жив? (раз в ~5 мин)
+                            int v6 = probeV6();
+                            v6ProbeMs = v6 == Integer.MAX_VALUE ? -2 : v6;
+                            if (v6 >= degradedThreshold()) {
+                                AAA6_MODE = false;
+                                jrnl("IPv6-путь стал плох (" + (v6 == Integer.MAX_VALUE ? "нет ответа" : v6 + " мс") + ") — выключаю, Roblox вернётся на IPv4");
+                            }
+                        }
                         continue;                  // канал здоров
                     }
                     jrnl("проба tr: " + (dead ? "нет ответа" : champProbe + " мс")
@@ -339,6 +364,20 @@ public final class MirrorConfig {
                         LAST_REFRESH.set(0);
                         refreshAsync(true);        // все эджи плохи — обновим пул целиком
                         jrnl("все эджи плохи — форс-обновление пула (контроль сети " + neutralInfo() + ")");
+                        // ПОСЛЕДНИЙ РЫЧАГ: v4-маршруты душат — а v6-путь часто мимо душевки
+                        int v6 = probeV6();
+                        v6ProbeMs = v6 == Integer.MAX_VALUE ? -2 : v6;
+                        if (v6 < degradedThreshold()) {
+                            if (!AAA6_MODE) {
+                                AAA6_MODE = true;
+                                jrnl("IPv6-путь жив: " + v6 + " мс — ВКЛЮЧАЮ IPv6 (Roblox уйдёт с душимого v4)");
+                            }
+                        } else if (AAA6_MODE) {
+                            AAA6_MODE = false;
+                            jrnl("IPv6-путь плох (" + (v6 == Integer.MAX_VALUE ? "нет ответа" : v6 + " мс") + ") — выключаю");
+                        } else {
+                            jrnl("IPv6-путь не лучше (" + (v6 == Integer.MAX_VALUE ? "нет ответа" : v6 + " мс") + ") — остаёмся на v4");
+                        }
                     }
                 } catch (InterruptedException e) {
                     return;
@@ -767,7 +806,7 @@ public final class MirrorConfig {
             in.close();
             String[] lines = bo.toString("UTF-8").trim().split("\n");
             StringBuilder b = new StringBuilder();
-            int from = Math.max(0, lines.length - 10);
+            int from = Math.max(0, lines.length - 14);
             for (int i = from; i < lines.length; i++) {
                 if (b.length() > 0) b.append('\n');
                 b.append(lines[i].trim());
@@ -836,7 +875,37 @@ public final class MirrorConfig {
             }
             if (ips != null) return DnsKit.buildAAnswers(q, ips);
         }
-        return DnsKit.buildEmptyAnswer(q); // AAAA → пусто, клиент пойдёт по IPv4
+        if (q.qtype == DnsKit.TYPE_AAAA && AAA6_MODE && q.qname.endsWith(".rbxcdn.com")) {
+            // v6 включаем ТОЛЬКО после доказательства пробой: иначе «пусто» → клиент по v4
+            List<byte[]> v6 = AAA6_CACHE.get(q.qname);
+            if (v6 == null) v6 = discoverV6(q.qname);
+            if (v6 != null) return DnsKit.buildAAAAAnswers(q, v6);
+        }
+        return DnsKit.buildEmptyAnswer(q);
+    }
+
+    /** Ленивое узнавание IPv6 хоста (однопоточно на хост); null — v6 нет/не готов. */
+    private static List<byte[]> discoverV6(String host) {
+        List<byte[]> have = AAA6_CACHE.get(host);
+        if (have != null) return have;
+        if (!V6_TRIED.add(host)) return AAA6_CACHE.get(host);
+        Thread t = new Thread(() -> {
+            List<byte[]> v6 = DnsKit.resolveAAAA6(host);
+            if (v6 != null && !v6.isEmpty()) {
+                List<byte[]> cap = v6.size() > 2 ? new ArrayList<>(v6.subList(0, 2)) : new ArrayList<>(v6);
+                AAA6_CACHE.put(host, cap);
+            }
+        }, "rbxfix-v6");
+        t.start();
+        try { t.join(4000); } catch (InterruptedException ignored) { }
+        return AAA6_CACHE.get(host);
+    }
+
+    /** Проба IPv6-пути до tr (тем же замером реальной загрузки). Integer.MAX_VALUE — не вышло. */
+    private static int probeV6() {
+        List<byte[]> v6 = discoverV6("tr.rbxcdn.com");
+        if (v6 == null || v6.isEmpty()) return Integer.MAX_VALUE;
+        return probeThroughput(v6.get(0));
     }
 
     /**

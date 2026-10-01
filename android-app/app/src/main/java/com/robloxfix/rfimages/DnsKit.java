@@ -232,6 +232,29 @@ public final class DnsKit {
         }
     }
 
+    /** AAAA-ответы (IPv6) для rbxcdn — зеркально buildAAnswers. */
+    public static byte[] buildAAAAAnswers(Query q, List<byte[]> ips) {
+        try {
+            ByteArrayOutputStream o = new ByteArrayOutputStream();
+            int an = ips == null ? 0 : ips.size();
+            writeHeader(o, q.id, 0x8180, an);
+            o.write(questionBytes(q));
+            if (ips != null) {
+                for (byte[] ip : ips) {
+                    o.write(0xC0); o.write(12);
+                    o.write(0); o.write(TYPE_AAAA);        // type AAAA
+                    o.write(0); o.write(1);                // class IN
+                    o.write(0); o.write(0); o.write(0); o.write(60); // TTL 60 сек
+                    o.write(0); o.write(16);               // RDLENGTH
+                    o.write(ip, 0, 16);
+                }
+            }
+            return o.toByteArray();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
     /** Пустой успешный ответ (используем для AAAA по rbxcdn — «IPv6 нет», клиент пойдёт по IPv4). */
     public static byte[] buildEmptyAnswer(Query q) {
         try {
@@ -386,6 +409,62 @@ public final class DnsKit {
                     boolean dup = false;
                     for (byte[] have : out) if (Arrays.equals(have, ip)) { dup = true; break; }
                     if (!dup && out.size() < 10) out.add(ip);
+                }
+            }
+        } catch (Exception ignored) { }
+        return out.isEmpty() ? null : out;
+    }
+
+    /** Разбор AAAA-записей (16-байтовые RDATA, тип 28). */
+    public static List<byte[]> parseAAAARecords(byte[] resp) {
+        try {
+            List<byte[]> out = new ArrayList<>();
+            int qd = u16(resp, 4);
+            int an = u16(resp, 6);
+            int[] end = new int[1];
+            int off = 12;
+            for (int i = 0; i < qd; i++) {
+                readName(resp, off, end);
+                off = end[0] + 4;
+            }
+            for (int i = 0; i < an && off + 12 <= resp.length; i++) {
+                readName(resp, off, end);
+                off = end[0];
+                int type = u16(resp, off);
+                int rdlen = u16(resp, off + 8);
+                off += 10;
+                if (type == TYPE_AAAA && rdlen == 16 && off + 16 <= resp.length) {
+                    out.add(Arrays.copyOfRange(resp, off, off + 16));
+                }
+                off += rdlen;
+            }
+            return out;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * IPv6-адреса через неотравляемые источники (DoH Cloudflare/Google + UDP 1.1.1.1).
+     * DNS оператора для AAAA не спрашиваем: грязный мусор всё равно отвалится на пробе.
+     */
+    public static List<byte[]> resolveAAAA6(String host) {
+        List<byte[]> out = new ArrayList<>();
+        try {
+            byte[] q = buildQuery(host, TYPE_AAAA);
+            List<byte[]> answers = new ArrayList<>();
+            for (String url : DOH_URLS) {
+                try { answers.add(dohQuery(url, q)); } catch (Exception ignored) { }
+            }
+            try { answers.add(udpTo(q, new byte[]{1, 1, 1, 1}, 1500)); } catch (Exception ignored) { }
+            for (byte[] ans : answers) {
+                if (ans == null) continue;
+                List<byte[]> ips = parseAAAARecords(ans);
+                if (ips == null) continue;
+                for (byte[] ip : ips) {
+                    boolean dup = false;
+                    for (byte[] have : out) if (Arrays.equals(have, ip)) { dup = true; break; }
+                    if (!dup && out.size() < 6) out.add(ip);
                 }
             }
         } catch (Exception ignored) { }

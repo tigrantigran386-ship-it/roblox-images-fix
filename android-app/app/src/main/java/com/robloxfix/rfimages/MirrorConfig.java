@@ -157,12 +157,46 @@ public final class MirrorConfig {
         for (String h : HOST_TO_MIRROR.keySet()) putFallback(h);
     }
 
-    /** Асинхронно обновляет IP всех зеркал через DoH (не чаще раза в 10 минут). */
+    private static volatile Thread watchdog;
+    private static final java.util.concurrent.atomic.AtomicInteger BAD_STREAK =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /** Часовой: раз в минуту проверяет чемпиона; 2 плохих замера подряд — внеплановый рефреш. */
+    private static void startWatchdog() {
+        if (watchdog != null && watchdog.isAlive()) return;
+        watchdog = new Thread(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(60_000);
+                    List<byte[]> ips = MIRROR_IPS.get("tr.rbxcdn.com");
+                    if (ips == null || ips.isEmpty()) continue;
+                    int r = rttMs(ips.get(0));
+                    if (r < 250) {
+                        BAD_STREAK.set(0);
+                        LAST_RTT_MS = r;
+                        continue;
+                    }
+                    if (BAD_STREAK.incrementAndGet() >= 2) {
+                        BAD_STREAK.set(0);
+                        LAST_REFRESH.set(0);       // снять троттлинг
+                        refreshAsync();            // внеплановое обновление СЕЙЧАС
+                    }
+                } catch (InterruptedException e) {
+                    return;
+                } catch (Throwable ignored) { }
+            }
+        }, "rbxfix-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+    }
+
+    /** Асинхронно обновляет IP всех зеркал через DoH (троттлинг, watchdog умеет форсировать). */
     public static void refreshAsync() {
         long now = System.currentTimeMillis();
         long prev = LAST_REFRESH.get();
         if (now - prev < REFRESH_INTERVAL_MS) return;
         if (!LAST_REFRESH.compareAndSet(prev, now)) return;
+        startWatchdog();
 
         Thread t = new Thread(() -> {
             // все хосты — параллельно (их теперь 20)
@@ -190,8 +224,18 @@ public final class MirrorConfig {
     /** Последняя измеренная задержка до лучшего IP зеркала (мс). */
     private static volatile int LAST_RTT_MS = Integer.MAX_VALUE;
 
-    /** Сколько раз «чемпион» среди IP менялся (для отчёта: частота ротации). */
+    /** Сколько раз менялся чемпион ГЛАВНОГО хоста tr (для отчёта). */
     public static volatile int champChanges;
+
+    /** Лучший из N TCP-замеров (одиночный пинг шумит). */
+    private static int bestRtt(byte[] ip, int samples) {
+        int best = Integer.MAX_VALUE;
+        for (int i = 0; i < samples; i++) {
+            int r = rttMs(ip);
+            if (r < best) best = r;
+        }
+        return best;
+    }
 
     private static boolean containsIp(List<byte[]> list, byte[] ip) {
         for (byte[] x : list) if (Arrays.equals(x, ip)) return true;
@@ -214,20 +258,29 @@ public final class MirrorConfig {
 
         boolean champInFresh = false;
         for (byte[] ip : fresh) if (Arrays.equals(ip, champ)) { champInFresh = true; break; }
-        boolean champAlive = champInFresh || rttMs(champ) < Integer.MAX_VALUE;
+        int champRtt = champInFresh ? bestRtt(champ, 2) : rttMs(champ);
+        boolean champAlive = champRtt < Integer.MAX_VALUE;
+        int bestFreshRtt = bestRtt(fresh.get(0), 2);
 
+        boolean move;
+        if (!champAlive) {
+            move = true;                          // чемпион мёртв
+        } else if (champRtt > 200 && bestFreshRtt + 50 < champRtt) {
+            move = true;                          // чемпион ПЛОХОЙ, а кандидат ощутимо лучше
+        } else if (champRtt > bestFreshRtt + 120) {
+            move = true;                          // разрыв огромный
+        } else {
+            move = false;                         // мелкие колебания — стабильность важнее
+        }
+
+        if (move) {
+            if (champAlive) result.add(fresh.get(0));   // новый чемпион, старый — запасным
+            else result.add(fresh.get(0));
+            if (host.equals("tr.rbxcdn.com")) champChanges++;
+        }
         if (champAlive) {
-            int bestFreshRtt = rttMs(fresh.get(0));
-            int champRtt = rttMs(champ);
-            if (champRtt > bestFreshRtt + 40) {
-                // новый ощутимо быстрее — переезжаем, старый оставляем запасным
-                result.add(fresh.get(0));
-                champChanges++;
-            }
             result.add(champ);
             LAST_RTT_MS = champRtt;
-        } else {
-            champChanges++;                       // чемпион умер — переезд неизбежен
         }
 
         for (byte[] ip : fresh) {
@@ -276,7 +329,7 @@ public final class MirrorConfig {
         byte[] b = ips.get(0);
         String ipStr = (b[0] & 0xFF) + "." + (b[1] & 0xFF) + "." + (b[2] & 0xFF) + "." + (b[3] & 0xFF);
         return ipStr + (LAST_RTT_MS < Integer.MAX_VALUE ? " (" + LAST_RTT_MS + " мс)" : "")
-                + ", смен IP: " + champChanges;
+                + ", смен IP (tr): " + champChanges;
     }
 
     /** Переписывать ли этот запрос (только A/AAAA по известным хостам). */

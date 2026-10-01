@@ -1,6 +1,7 @@
 package android.content;
 import android.content.pm.PackageManager;
 public abstract class Context {
+    public java.io.File getFilesDir() { return new java.io.File("/data"); }
     public static final String CONNECTIVITY_SERVICE = "connectivity";
     public static final String CLIPBOARD_SERVICE = "clipboard";
     public String getString(int resId) { return null; }

@@ -105,7 +105,9 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
                     + "переслано апстриму: " + forwarded + "\n"
                     + "ошибок апстрима: " + upstreamFail + " (SERVFAIL: " + servfail + ")\n"
                     + "ответов отправлено: " + sent + " (дублей отброшено: " + deduped + ")\n"
-                    + "внутренних ошибок: " + errors + (errors > 0 ? " (последняя: " + lastError + ")" : "") + "\n";
+                    + "внутренних ошибок: " + errors + (errors > 0 ? " (последняя: " + lastError + ")" : "") + "\n"
+                    + "журнал (включая прошлый сеанс):\n"
+                    + com.robloxfix.rfimages.MirrorConfig.journalTail();
         }
     }
 
@@ -142,6 +144,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
     @Override
     public void onCreate() {
         super.onCreate();
+        MirrorConfig.initJournal(getFilesDir());   // журнал переживает тумблер → видно плохое окно
         DnsKit.protector = this;          // наши DoH/UDP-сокеты не должны попадать в свой же туннель
         captureUpstreamDns();             // ДО установления туннеля: узнаём DNS оператора
         MirrorConfig.refreshAsync();

@@ -139,6 +139,17 @@ public final class MirrorConfig {
     /** Akamai-кандидаты для tr (строки "a.b.c.d") — вторая нога CDN Roblox. */
     private static final java.util.Set<String> AKAMAI_TR =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** Akamai-IP, зашитые заранее: резолв trak через DNS оператора может быть отравлен. */
+    private static final String[] AKAMAI_TR_STATIC = { "23.219.78.197", "23.219.78.207" };
+
+    /** Зашитый запасной путь тестовой картинки (если thumbnails API недоступен). */
+    private static final String FALLBACK_IMAGE_PATH =
+            "/180DAY-f6cc8a94434eb8708aaab2f7732bac01/420/420/Image/Png/noFilter";
+
+    /** Журнал событий: переживает тумблер, хвост показываем в отчёте. */
+    private static volatile java.io.File JOURNAL_FILE;
+    private static volatile long SESSION_START;
     private static final java.util.Set<String> DISCOVERY_TRIED =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
@@ -175,21 +186,32 @@ public final class MirrorConfig {
                     List<byte[]> ips = MIRROR_IPS.get("tr.rbxcdn.com");
                     if (ips == null || ips.isEmpty()) continue;
 
-                    // 1) проба РЕАЛЬНОЙ загрузки у чемпиона
+                    // 1) проба РЕАЛЬНОЙ загрузки у чемпиона (раз в минуту)
                     int champProbe = probeThroughput(ips.get(0));
                     probeChamp = champProbe;
 
                     if (champProbe < 2500) {
+                        if (BAD_STREAK.get() >= 2) jrnl("канал tr восстановился: " + champProbe + " мс");
                         BAD_STREAK.set(0);
                         LAST_RTT_MS = champProbe;
                         continue;                  // канал здоров (300КБ быстрее 2.5с)
                     }
+                    jrnl("проба tr: " + (champProbe == Integer.MAX_VALUE ? "нет ответа" : champProbe + " мс")
+                            + " — деградация");
 
-                    // 2) канал плохой — меряем кандидатов: свежий CF + Akamai-нога
+                    // 2) подтверждение: одно сетевое дрожание — не повод переезжать
+                    int streak = BAD_STREAK.incrementAndGet();
+                    if (streak < 2) continue;
+
+                    // 3) канал плохой 2 минуты подряд — меряем кандидатов: CF + Akamai (+зашитые)
                     List<byte[]> fresh = DnsKit.resolveA4Merged("tr.rbxcdn.com");
                     List<byte[]> cands = new ArrayList<>();
                     if (fresh != null) for (byte[] ip : fresh) if (!containsIp(cands, ip) && cands.size() < 6) cands.add(ip);
                     for (byte[] ip : ips) if (!containsIp(cands, ip) && cands.size() < 6) cands.add(ip);
+                    for (String a : AKAMAI_TR_STATIC) {
+                        byte[] ab = parseDotted(a);
+                        if (ab != null && !containsIp(cands, ab) && cands.size() < 8) cands.add(ab);
+                    }
 
                     int bestProbe = Integer.MAX_VALUE;
                     byte[] bestIp = null;
@@ -214,10 +236,14 @@ public final class MirrorConfig {
                         champChanges++;
                         champType = AKAMAI_TR.contains(dotted(bestIp)) ? "Akamai" : "CF";
                         probeChamp = bestProbe;
-                    } else if (BAD_STREAK.incrementAndGet() >= 2) {
+                        BAD_STREAK.set(0);
+                        jrnl("смена tr (watchdog): " + dotted(ips.get(0)) + " → " + dotted(bestIp)
+                                + " (" + champProbe + " → " + bestProbe + " мс)");
+                    } else if (streak >= 3) {
                         BAD_STREAK.set(0);
                         LAST_REFRESH.set(0);
                         refreshAsync();            // все эджи плохи — обновим пул целиком
+                        jrnl("все эджи плохи — форс-обновление пула");
                     }
                 } catch (InterruptedException e) {
                     return;
@@ -260,6 +286,14 @@ public final class MirrorConfig {
                                 for (byte[] have : all) if (Arrays.equals(have, ip)) { dup = true; break; }
                                 if (!dup && all.size() < 10) all.add(ip);
                             }
+                        }
+                        for (String a : AKAMAI_TR_STATIC) {   // зашитые: резолв trak может быть отравлен
+                            byte[] ab = parseDotted(a);
+                            if (ab == null) continue;
+                            AKAMAI_TR.add(a);
+                            boolean dup = false;
+                            for (byte[] have : all) if (Arrays.equals(have, ab)) { dup = true; break; }
+                            if (!dup && all.size() < 10) all.add(ab);
                         }
                         // ранжируем ПРОБОЙ РЕАЛЬНОЙ ЗАГРУЗКИ (максимум 6 проб)
                         List<byte[]> probeList = all.size() > 6 ? new ArrayList<>(all.subList(0, 6)) : new ArrayList<>(all);
@@ -339,7 +373,7 @@ public final class MirrorConfig {
                 }
             }
         } catch (Throwable ignored) { }
-        return cachedImagePath != null ? cachedImagePath : "/";
+        return cachedImagePath != null ? cachedImagePath : FALLBACK_IMAGE_PATH;
     }
 
     /**
@@ -356,11 +390,12 @@ public final class MirrorConfig {
                     new javax.net.ssl.SNIHostName("tr.rbxcdn.com")));
             s.setSSLParameters(sp);
             if (DnsKit.protector != null) DnsKit.protector.protectSocket(s);
+            String imgPath = getImagePath();   // вне секундомера: API/кэш не портят замер
             long t0 = System.currentTimeMillis();
             s.connect(new java.net.InetSocketAddress(java.net.InetAddress.getByAddress(ip), 443), 2000);
             s.startHandshake();
             java.io.OutputStream os = s.getOutputStream();
-            os.write(("GET " + getImagePath() + " HTTP/1.1\r\nHost: tr.rbxcdn.com\r\n"
+            os.write(("GET " + imgPath + " HTTP/1.1\r\nHost: tr.rbxcdn.com\r\n"
                     + "User-Agent: rbxfix-probe\r\nConnection: close\r\n\r\n").getBytes("US-ASCII"));
             os.flush();
             java.io.InputStream is = s.getInputStream();
@@ -510,8 +545,10 @@ public final class MirrorConfig {
     }
 
     /**
-     * Выбор чемпиона tr по результатам пробы загрузки, со стабильностью:
-     * текущий чемпион остаётся, если он здоров (<2500 мс) и не хуже лучшего на 25%.
+     * Выбор чемпиона tr. ГЛАВНОЕ ПРАВИЛО (урок «цикличных подвисаний»):
+     * ЗДОРОВОГО ЧЕМПИОНА НЕ ТРОГАЕМ. Один замер шумит на ±30-50%, поэтому
+     * «лучше на 25%» = лотерея, ломающая работающий канал каждые 5-15 минут.
+     * Переезд только если чемпион РЕАЛЬНО плох: >=2500 мс или не ответил.
      */
     private static List<byte[]> pickTrStable(List<byte[]> ranked, Map<String, Integer> scores) {
         if (ranked == null || ranked.isEmpty()) return ranked;
@@ -523,16 +560,21 @@ public final class MirrorConfig {
             String champD = dotted(old.get(0));
             Integer champScore = scores.get(champD);
             if (champScore == null && containsIp(ranked, old.get(0))) champScore = probeThroughput(old.get(0));
-            if (champScore != null && champScore < 2500 && champScore <= bestScore * 125 / 100) {
-                // чемпион здоров и сопоставим — оставляем (стабильность важнее ±10%)
+            if (champScore != null && champScore < 2500) {
+                // чемпион здоров — оставляем ЛЮБОЙ ценой (стабильность решает всё)
                 List<byte[]> out = new ArrayList<>();
                 out.add(old.get(0));
                 for (byte[] ip : ranked) if (!containsIp(out, ip) && out.size() < 6) out.add(ip);
+                for (byte[] ip : old) if (!containsIp(out, ip) && out.size() < 6) out.add(ip);
                 probeChamp = champScore;
                 champType = AKAMAI_TR.contains(champD) ? "Akamai" : "CF";
                 return out;
             }
-            if (champScore == null || champScore >= 2500) champChanges++;   // чемпион плохой — переезд
+            // чемпион плохой — переезжаем на лучшего по пробе
+            champChanges++;
+            jrnl("смена tr (refresh): " + champD + " ("
+                    + (champScore == null ? "нет ответа" : champScore + " мс") + ") → " + bestD + " ("
+                    + (bestScore == Integer.MAX_VALUE ? "нет ответа" : bestScore + " мс") + ")");
         }
         probeChamp = bestScore;
         champType = AKAMAI_TR.contains(bestD) ? "Akamai" : "CF";
@@ -544,6 +586,80 @@ public final class MirrorConfig {
 
     private static String dotted(byte[] ip) {
         return (ip[0] & 0xFF) + "." + (ip[1] & 0xFF) + "." + (ip[2] & 0xFF) + "." + (ip[3] & 0xFF);
+    }
+
+    private static byte[] parseDotted(String s2) {
+        try {
+            String[] q = s2.split("\\.");
+            return new byte[]{(byte) Integer.parseInt(q[0]), (byte) Integer.parseInt(q[1]),
+                    (byte) Integer.parseInt(q[2]), (byte) Integer.parseInt(q[3])};
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Вызывается из FixVpnService.onCreate: старт нового сеанса журнала. */
+    public static void initJournal(java.io.File dir) {
+        try {
+            JOURNAL_FILE = new java.io.File(dir, "rbxfix-journal.log");
+            SESSION_START = System.currentTimeMillis();
+            jrnl("— сеанс запущен —");
+        } catch (Throwable ignored) { }
+    }
+
+    private static void jrnl(String msg) {
+        java.io.File f = JOURNAL_FILE;
+        if (f == null) return;
+        try {
+            long sec = (System.currentTimeMillis() - SESSION_START) / 1000;
+            StringBuilder b = new StringBuilder("+");
+            if (sec / 60 < 10) b.append('0');
+            b.append(sec / 60).append(':');
+            if (sec % 60 < 10) b.append('0');
+            b.append(sec % 60).append(' ').append(msg).append('\n');
+            java.io.FileOutputStream o = new java.io.FileOutputStream(f, true);
+            o.write(b.toString().getBytes("UTF-8"));
+            o.close();
+            if (f.length() > 65536) {   // не даём файлу расти вечно
+                long skip = f.length() - 8192;
+                java.io.FileInputStream in = new java.io.FileInputStream(f);
+                in.skip(skip);
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[4096];
+                int n;
+                while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                in.close();
+                byte[] tail = bo.toByteArray();
+                int nl = 0;
+                while (nl < tail.length && tail[nl] != '\n') nl++;   // режем первую полустроку
+                java.io.FileOutputStream w = new java.io.FileOutputStream(f, false);
+                if (nl < tail.length) w.write(tail, nl + 1, tail.length - nl - 1);
+                w.close();
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    /** Хвост журнала для отчёта: последние строки, включая сеанс до тумблера. */
+    public static String journalTail() {
+        java.io.File f = JOURNAL_FILE;
+        if (f == null || !f.exists()) return "";
+        try {
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            in.close();
+            String[] lines = bo.toString("UTF-8").trim().split("\n");
+            StringBuilder b = new StringBuilder();
+            int from = Math.max(0, lines.length - 10);
+            for (int i = from; i < lines.length; i++) {
+                if (b.length() > 0) b.append('\n');
+                b.append(lines[i].trim());
+            }
+            return b.toString();
+        } catch (Throwable ignored) { }
+        return "";
     }
 
     /** Строка для отчёта: лучший IP зеркала и его задержка. */

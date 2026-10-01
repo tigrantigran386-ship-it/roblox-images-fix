@@ -172,7 +172,7 @@ public final class MirrorConfig {
                 Thread j = new Thread(() -> {
                     List<byte[]> ips = DnsKit.resolveA4(e.getValue());
                     if (ips != null && !ips.isEmpty()) {
-                        results.put(e.getKey(), sortByRtt(ips));
+                        results.put(e.getKey(), stableMerge(e.getKey(), sortByRtt(ips)));
                     }
                 }, "rbxfix-refresh-" + e.getKey());
                 jobs.add(j);
@@ -189,6 +189,55 @@ public final class MirrorConfig {
 
     /** Последняя измеренная задержка до лучшего IP зеркала (мс). */
     private static volatile int LAST_RTT_MS = Integer.MAX_VALUE;
+
+    /** Сколько раз «чемпион» среди IP менялся (для отчёта: частота ротации). */
+    public static volatile int champChanges;
+
+    private static boolean containsIp(List<byte[]> list, byte[] ip) {
+        for (byte[] x : list) if (Arrays.equals(x, ip)) return true;
+        return false;
+    }
+
+    /**
+     * СТАБИЛЬНОЕ слияние: текущий «чемпион» остаётся первым, пока жив
+     * (переезд только если он мёртв или новый быстрее на 40+ мс).
+     * Свежие IP добавляются как ЗАПАСНЫЕ, старые живые — в конец списка.
+     * Это убирает ротацию IP, из-за которой Roblox периодически долбился
+     * в «умирающий» адрес.
+     */
+    private static List<byte[]> stableMerge(String host, List<byte[]> fresh) {
+        List<byte[]> old = MIRROR_IPS.get(host);
+        if (old == null || old.isEmpty() || fresh == null || fresh.isEmpty()) return fresh;
+
+        List<byte[]> result = new ArrayList<>();
+        byte[] champ = old.get(0);
+
+        boolean champInFresh = false;
+        for (byte[] ip : fresh) if (Arrays.equals(ip, champ)) { champInFresh = true; break; }
+        boolean champAlive = champInFresh || rttMs(champ) < Integer.MAX_VALUE;
+
+        if (champAlive) {
+            int bestFreshRtt = rttMs(fresh.get(0));
+            int champRtt = rttMs(champ);
+            if (champRtt > bestFreshRtt + 40) {
+                // новый ощутимо быстрее — переезжаем, старый оставляем запасным
+                result.add(fresh.get(0));
+                champChanges++;
+            }
+            result.add(champ);
+            LAST_RTT_MS = champRtt;
+        } else {
+            champChanges++;                       // чемпион умер — переезд неизбежен
+        }
+
+        for (byte[] ip : fresh) {
+            if (!containsIp(result, ip) && result.size() < 5) result.add(ip);
+        }
+        for (byte[] ip : old) {
+            if (!containsIp(result, ip) && result.size() < 6) result.add(ip);
+        }
+        return result;
+    }
 
     /** TCP-подключение на 443 — меряем реальную задержку до эджа. */
     private static int rttMs(byte[] ip) {
@@ -226,7 +275,8 @@ public final class MirrorConfig {
         if (ips == null || ips.isEmpty()) return "нет IP";
         byte[] b = ips.get(0);
         String ipStr = (b[0] & 0xFF) + "." + (b[1] & 0xFF) + "." + (b[2] & 0xFF) + "." + (b[3] & 0xFF);
-        return ipStr + (LAST_RTT_MS < Integer.MAX_VALUE ? " (" + LAST_RTT_MS + " мс)" : "");
+        return ipStr + (LAST_RTT_MS < Integer.MAX_VALUE ? " (" + LAST_RTT_MS + " мс)" : "")
+                + ", смен IP: " + champChanges;
     }
 
     /** Переписывать ли этот запрос (только A/AAAA по известным хостам). */

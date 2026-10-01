@@ -23,6 +23,10 @@ public final class DnsKit {
     public static final int TYPE_A = 1;
     public static final int TYPE_AAAA = 28;
 
+    /** TTL в проводе: 60 с в норме; при деградации канала watchdog снижает до 15 с,
+     *  чтобы Roblox быстрее переподключился к свежему (лучшему) эджу. */
+    public static volatile int WIRE_TTL = 60;
+
     /** Кто-то, кто умеет «защищать» сокеты от нашего же VPN (реализует FixVpnService). */
     public interface SocketProtector {
         void protectSocket(java.net.Socket s);
@@ -221,7 +225,9 @@ public final class DnsKit {
                     o.write(0xC0); o.write(12);            // имя — указатель на вопрос (офсет 12)
                     o.write(0); o.write(TYPE_A);           // type A
                     o.write(0); o.write(1);                // class IN
-                    o.write(0); o.write(0); o.write(0); o.write(60); // TTL 60 сек — быстрая смена эджа
+                    int t = WIRE_TTL;
+                    o.write(0); o.write(0);
+                    o.write((t >>> 8) & 0xFF); o.write(t & 0xFF);   // TTL (динамический)
                     o.write(0); o.write(4);                // RDLENGTH
                     o.write(ip, 0, 4);
                 }
@@ -244,7 +250,9 @@ public final class DnsKit {
                     o.write(0xC0); o.write(12);
                     o.write(0); o.write(TYPE_AAAA);        // type AAAA
                     o.write(0); o.write(1);                // class IN
-                    o.write(0); o.write(0); o.write(0); o.write(60); // TTL 60 сек
+                    int t = WIRE_TTL;
+                    o.write(0); o.write(0);
+                    o.write((t >>> 8) & 0xFF); o.write(t & 0xFF);   // TTL (динамический)
                     o.write(0); o.write(16);               // RDLENGTH
                     o.write(ip, 0, 16);
                 }

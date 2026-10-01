@@ -282,6 +282,7 @@ public final class MirrorConfig {
                         if (BAD_STREAK.get() >= 2) jrnl("канал tr восстановился: " + champProbe + " мс" + ctl);
                         BAD_STREAK.set(0);
                         LAST_RTT_MS = champProbe;
+                        DnsKit.WIRE_TTL = 60;              // норма: спокойный TTL
                         if (AAA6_MODE && (++WDOG_CYCLE % 10 == 0)) {   // v6 ещё жив? (раз в ~5 мин)
                             int v6 = probeV6();
                             v6ProbeMs = v6 == Integer.MAX_VALUE ? -2 : v6;
@@ -294,6 +295,7 @@ public final class MirrorConfig {
                     }
                     jrnl("проба tr: " + (dead ? "нет ответа" : champProbe + " мс")
                             + " — деградация (порог " + degradedThreshold() + " мс" + ctl + ")");
+                    DnsKit.WIRE_TTL = 15;                  // плохое окно: Roblox переподключается чаще
 
                     // 2) Урок vc10: мёртвый канал чиним СРАЗУ (мёртв — однозначен),
                     //    медленную деградацию подтверждаем второй пробой (30 с)

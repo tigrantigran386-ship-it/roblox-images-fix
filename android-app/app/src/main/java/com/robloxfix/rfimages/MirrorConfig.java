@@ -170,6 +170,17 @@ public final class MirrorConfig {
 
     /** Последний контрольный замер обычной сети ВНЕ CDN (чистый РФ-эталон ya.ru), мс. */
     public static volatile int neutralProbe = -1;
+
+    /** Тип сети (Wi-Fi / мобильный) и число переключений — подозреваемый №1 цикличных тупок. */
+    public static volatile String NET_TYPE = "?";
+    public static volatile int NET_SWITCHES = 0;
+
+    public static String netInfo() {
+        return NET_TYPE + " (смен сети: " + NET_SWITCHES + ")";
+    }
+
+    /** Публичная запись в журнал (для FixVpnService). */
+    public static void note(String msg) { jrnl(msg); }
     private static volatile String neutralIp;
     private static volatile long neutralIpAt;
 

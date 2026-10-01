@@ -8,6 +8,7 @@ import android.net.ConnectivityManager;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.net.LinkProperties;
+import android.net.NetworkCapabilities;
 import android.net.Network;
 import android.net.VpnService;
 import android.os.Build;
@@ -94,6 +95,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             return "Roblox Images Fix v1.0.0\n"
                     + "работает: " + (running ? "да (" + up + " c)" : "нет") + "\n"
                     + "per-app: " + perApp + "\n"
+                    + "сеть: " + com.robloxfix.rfimages.MirrorConfig.netInfo() + "\n"
                     + "зеркало картинок: " + com.robloxfix.rfimages.MirrorConfig.bestMirrorInfo() + "\n"
                     + "контроль сети (вне CDN): " + com.robloxfix.rfimages.MirrorConfig.neutralInfo() + "\n"
                     + "IPv6-путь: " + com.robloxfix.rfimages.MirrorConfig.v6Info() + "\n"
@@ -150,6 +152,53 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         DnsKit.protector = this;          // наши DoH/UDP-сокеты не должны попадать в свой же туннель
         captureUpstreamDns();             // ДО установления туннеля: узнаём DNS оператора
         MirrorConfig.refreshAsync(true);   // тумблер = всегда свежая проба (иначе мёртвый чемпион из прошлого сеанса)
+        watchNetworkSwitches();           // подозреваемый №1 тупок: автопереключение Wi-Fi↔мобильный
+    }
+
+    private ConnectivityManager.NetworkCallback netCb;
+    private volatile String lastNetType = "?";
+    private volatile long lastNetEventAt;
+
+    /** Отслеживание переключений сети: каждое — в журнал + перезапуск DNS и пробы эджей. */
+    private void watchNetworkSwitches() {
+        if (Build.VERSION.SDK_INT < 24) return;
+        try {
+            final ConnectivityManager cm =
+                    (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            netCb = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network n) { handleNetEvent(); }
+                @Override
+                public void onCapabilitiesChanged(Network n, NetworkCapabilities c) {
+                    lastNetType = netTypeOf(c);
+                    MirrorConfig.NET_TYPE = lastNetType;
+                }
+                @Override
+                public void onLost(Network n) { handleNetEvent(); }
+            };
+            cm.registerDefaultNetworkCallback(netCb);
+        } catch (Throwable ignored) { }
+    }
+
+    private String netTypeOf(NetworkCapabilities c) {
+        if (c == null) return "?";
+        if (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
+        if (c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "мобильный";
+        return "др.";
+    }
+
+    /** Сеть сменилась/мерцнула: журнал + свежий DNS оператора + внеплановая проба эджей. */
+    private void handleNetEvent() {
+        long now = System.currentTimeMillis();
+        if (now - lastNetEventAt < 20_000) return;   // шторм onAvailable/onLost глушим
+        lastNetEventAt = now;
+        MirrorConfig.NET_SWITCHES++;
+        final String t = String.valueOf(lastNetType);
+        MirrorConfig.note("смена сети → " + t + " — перезапускаю DNS и пробу эджей");
+        new Thread(() -> {
+            try { captureUpstreamDns(); } catch (Throwable ignored) { }
+            try { MirrorConfig.refreshAsync(true); } catch (Throwable ignored) { }
+        }, "rbxfix-net").start();
     }
 
     /** Узнаём DNS-серверы текущей сети (то, что телефон использует без VPN). */
@@ -444,6 +493,13 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
 
     @Override
     public void onDestroy() {
+        if (netCb != null && Build.VERSION.SDK_INT >= 24) {
+            try {
+                ((ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE))
+                        .unregisterNetworkCallback(netCb);
+            } catch (Throwable ignored) { }
+            netCb = null;
+        }
         stopFix();
         super.onDestroy();
     }

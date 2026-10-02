@@ -229,6 +229,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         if (now - lastNetEventAt < 20_000) return;   // шторм onAvailable/onLost глушим
         lastNetEventAt = now;
         MirrorConfig.NET_SWITCHES++;
+        MirrorConfig.LAST_NET_SWITCH = MirrorConfig.relStamp();
         final String t = String.valueOf(lastNetType);
         MirrorConfig.note("смена сети → " + t + " — перезапускаю DNS и пробу эджей");
         new Thread(() -> {

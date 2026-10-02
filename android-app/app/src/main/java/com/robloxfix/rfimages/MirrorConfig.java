@@ -174,9 +174,23 @@ public final class MirrorConfig {
     /** Тип сети (Wi-Fi / мобильный) и число переключений — подозреваемый №1 цикличных тупок. */
     public static volatile String NET_TYPE = "?";
     public static volatile int NET_SWITCHES = 0;
+    /** Время последней смены сети относительно старта сеанса («+02:47»). */
+    public static volatile String LAST_NET_SWITCH = "—";
+
+    /** Штамп «+ММ:СС» от старта сеанса. */
+    public static String relStamp() {
+        long sec = Math.max(0, (System.currentTimeMillis() - SESSION_START) / 1000);
+        StringBuilder b = new StringBuilder("+");
+        if (sec / 60 < 10) b.append('0');
+        b.append(sec / 60).append(':');
+        if (sec % 60 < 10) b.append('0');
+        b.append(sec % 60);
+        return b.toString();
+    }
 
     public static String netInfo() {
-        return NET_TYPE + " (смен сети: " + NET_SWITCHES + ")";
+        return NET_TYPE + " (смен сети: " + NET_SWITCHES
+                + (NET_SWITCHES > 0 ? ", последняя " + LAST_NET_SWITCH : "") + ")";
     }
 
     /** Публичная запись в журнал (для FixVpnService). */
@@ -738,10 +752,12 @@ public final class MirrorConfig {
                 return out;
             }
             // чемпион плохой — переезжаем на лучшего по пробе
-            champChanges++;
-            jrnl("смена tr (refresh): " + champD + " ("
-                    + (champScore == null ? "нет ответа" : champScore + " мс") + ") → " + bestD + " ("
-                    + (bestScore == Integer.MAX_VALUE ? "нет ответа" : bestScore + " мс") + ")");
+            if (!bestD.equals(champD)) {   // тот же IP — это подтверждение, а не смена (урок vc16)
+                champChanges++;
+                jrnl("смена tr (refresh): " + champD + " ("
+                        + (champScore == null ? "нет ответа" : champScore + " мс") + ") → " + bestD + " ("
+                        + (bestScore == Integer.MAX_VALUE ? "нет ответа" : bestScore + " мс") + ")");
+            }
         }
         probeChamp = bestScore;
         champType = AKAMAI_TR.contains(bestD) ? "Akamai" : "CF";

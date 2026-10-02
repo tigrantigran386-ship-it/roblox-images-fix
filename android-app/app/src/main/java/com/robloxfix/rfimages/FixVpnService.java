@@ -167,15 +167,28 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             final ConnectivityManager cm =
                     (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
             netCb = new ConnectivityManager.NetworkCallback() {
+                private boolean isVpn(Network n) {
+                    try {
+                        NetworkCapabilities c = cm.getNetworkCapabilities(n);
+                        return c != null && c.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
+                    } catch (Throwable t) { return false; }
+                }
                 @Override
-                public void onAvailable(Network n) { handleNetEvent(); }
+                public void onAvailable(Network n) {
+                    if (isVpn(n)) return;   // vc17: появление нашего же туннеля — НЕ смена сети
+                    handleNetEvent();
+                }
                 @Override
                 public void onCapabilitiesChanged(Network n, NetworkCapabilities c) {
+                    if (c != null && c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return;
                     lastNetType = netTypeOf(c);
                     MirrorConfig.NET_TYPE = lastNetType;
                 }
                 @Override
-                public void onLost(Network n) { handleNetEvent(); }
+                public void onLost(Network n) {
+                    if (isVpn(n)) return;
+                    handleNetEvent();
+                }
             };
             cm.registerDefaultNetworkCallback(netCb);
         } catch (Throwable ignored) { }
@@ -186,6 +199,30 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         if (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
         if (c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "мобильный";
         return "др.";
+    }
+
+    /**
+     * vc17, урок «на мобильном показало Wi-Fi»: внутри VPN-сессии getActiveNetwork
+     * возвращает САМ ТУННЕЛЬ, чей транспорт — мусор от момента старта. Теперь
+     * перебираем ВСЕ сети системы и выкидываем VPN — видим реальные Wi-Fi/LTE.
+     */
+    private String detectNetType() {
+        try {
+            ConnectivityManager cm =
+                    (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            Network[] all = cm.getAllNetworks();
+            if (all == null) return null;
+            String fallback = null;
+            for (Network n : all) {
+                NetworkCapabilities c = cm.getNetworkCapabilities(n);
+                if (c == null || c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue;
+                if (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
+                if (c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) fallback = "мобильный";
+            }
+            return fallback;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private Thread netPoller;
@@ -201,12 +238,8 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
             while (running) {
                 try {
                     Thread.sleep(10_000);
-                    ConnectivityManager cm =
-                            (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-                    Network n = cm.getActiveNetwork();
-                    NetworkCapabilities c = n == null ? null : cm.getNetworkCapabilities(n);
-                    String t = netTypeOf(c);
-                    if ("?".equals(t)) continue;
+                    String t = detectNetType();
+                    if (t == null) continue;
                     if ("?".equals(lastNetType)) {
                         lastNetType = t;                       // первая инициализация — без события
                         MirrorConfig.NET_TYPE = t;

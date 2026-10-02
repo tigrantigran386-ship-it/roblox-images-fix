@@ -3,6 +3,7 @@ public class ConnectivityManager {
     public Network getActiveNetwork() { return null; }
     public LinkProperties getLinkProperties(Network n) { return null; }
     public NetworkCapabilities getNetworkCapabilities(Network n) { return null; }
+    public Network[] getAllNetworks() { return new Network[0]; }
     public static class NetworkCallback {
         public void onAvailable(Network n) {}
         public void onCapabilitiesChanged(Network n, NetworkCapabilities c) {}

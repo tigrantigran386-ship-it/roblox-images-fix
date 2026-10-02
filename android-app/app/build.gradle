@@ -10,7 +10,7 @@ android {
         applicationId "com.robloxfix.rfimages"
         minSdk 24          // Android 7.0 — покрывает ~98% устройств
         targetSdk 34       // Android 14
-        versionCode 16
+        versionCode 17
         versionName "1.0.0"
     }
 

@@ -153,6 +153,7 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         captureUpstreamDns();             // ДО установления туннеля: узнаём DNS оператора
         MirrorConfig.refreshAsync(true);   // тумблер = всегда свежая проба (иначе мёртвый чемпион из прошлого сеанса)
         watchNetworkSwitches();           // подозреваемый №1 тупок: автопереключение Wi-Fi↔мобильный
+        startNetPoller();                 // vc15: поллинг типа сети каждые 10 с (работает всегда, не только по колбэку)
     }
 
     private ConnectivityManager.NetworkCallback netCb;
@@ -185,6 +186,41 @@ public class FixVpnService extends VpnService implements DnsKit.SocketProtector 
         if (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
         if (c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "мобильный";
         return "др.";
+    }
+
+    private Thread netPoller;
+
+    /**
+     * vc15, урок «смен сети: 0»: колбэк молча падал без ACCESS_NETWORK_STATE.
+     * Поллинг типа сети каждые 10 с — работает на любом API и ловит мерцание
+     * Wi-Fi даже без полного разрыва. Смена типа = то же самолечение, что и по колбэку.
+     */
+    private void startNetPoller() {
+        if (netPoller != null) return;
+        netPoller = new Thread(() -> {
+            while (running) {
+                try {
+                    Thread.sleep(10_000);
+                    ConnectivityManager cm =
+                            (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                    Network n = cm.getActiveNetwork();
+                    NetworkCapabilities c = n == null ? null : cm.getNetworkCapabilities(n);
+                    String t = netTypeOf(c);
+                    if ("?".equals(t)) continue;
+                    if ("?".equals(lastNetType)) {
+                        lastNetType = t;                       // первая инициализация — без события
+                        MirrorConfig.NET_TYPE = t;
+                    } else if (!t.equals(lastNetType)) {
+                        lastNetType = t;
+                        MirrorConfig.NET_TYPE = t;
+                        handleNetEvent();                      // Wi-Fi↔мобильный — лечим и пишем в журнал
+                    }
+                } catch (InterruptedException e) {
+                    return;
+                } catch (Throwable ignored) { }
+            }
+        }, "rbxfix-netpoll");
+        netPoller.start();
     }
 
     /** Сеть сменилась/мерцнула: журнал + свежий DNS оператора + внеплановая проба эджей. */
